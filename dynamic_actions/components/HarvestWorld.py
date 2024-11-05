@@ -2,6 +2,7 @@ import numpy as np
 from numpy.random import choice, random
 import matplotlib.pyplot as plt
 from .Agent import Agent
+from typing import List
 
 from .GridWorldCell import (WallCell, GrassCell, TreeAppleCell, 
                             RespawnCell, PrincipalRespawnCell)
@@ -10,7 +11,7 @@ AGENT_COLORS = ['#b510a7','#f28424','#05fcaa',
                 '#f51bd4','#eeff03','#033dff']
 
 class HarvestWorld():
-    def __init__(self, ascii_map:str, regrowth_probs:list[float], num_agents:int=0):
+    def __init__(self, ascii_map:str, regrowth_probs:List[float], num_agents:int=0):
         # max number of agents equal to 5
         if num_agents > 6:
             raise ValueError('The maximum number of agents is 2.') 
@@ -26,9 +27,10 @@ class HarvestWorld():
                                     if isinstance(cell, RespawnCell)]
         # use respawn_positions to place agents
         self.agents = [Agent(x=xy[0], y=xy[1], 
-                             world_knowledge=self.object_map,
-                             color=AGENT_COLORS[n]) for n, xy in enumerate(self.respawn_positions[:num_agents])]        
- 
+                            world_knowledge=self.object_map,
+                            color=AGENT_COLORS[n]) for n, xy in enumerate(self.respawn_positions[:num_agents])]        
+        
+        
     def create_object_map(self):
         object_map = np.empty(self.ascii_matrix.shape, dtype=object)
         for i in range(self.ascii_matrix.shape[0]):
