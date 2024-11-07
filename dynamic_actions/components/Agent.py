@@ -7,8 +7,9 @@ from typing import List, Tuple, Dict
 
 class Agent:
     def __init__(self, x: int, y: int, world_knowledge:np_array,
+                agent_life: int = 20, gamma: float = 0.9,
                 actions: List[str] = ['up', 'down', 'left', 'right'],
-                alpha: float = 0.1, gamma: float = 0.9, epsilon: float = 0.2,
+                alpha: float = 0.1, epsilon: float = 0.4,
                 color: Tuple[int, int, int] = (0, 0, 0)):
         
         self.current_state = (x, y)
@@ -19,6 +20,7 @@ class Agent:
         self.color: Tuple[int, int, int] = color
         self.world_knowledge = world_knowledge
         self.n_rows, self.n_cols = world_knowledge.shape
+        self.agent_life = agent_life
         self.q_knowledge: Dict[Tuple[int, int], Dict[str, float]] = {
             (i, j): {}
             for i in range(self.n_rows) for j in range(self.n_cols)
@@ -41,20 +43,19 @@ class Agent:
     
     
     def get_best_action(self, state: Tuple[int, int])-> Tuple[str, float]:
-        possible_actions = [a for a in self.actions if self.get_next_state(state, a) != state]
-        if not possible_actions:
-            return None, 0.0
         
-        # Obtener el valor mínimo conocido para las acciones posibles
-        max_q_value = max(self.q_knowledge[self.get_next_state(state, a)].get(a, 0) for a in possible_actions)
+        # Obtener el valor máximo conocido para las acciones posibles
+        max_q_value = max(self.q_knowledge[state].get(a, 0) for a in self.actions)
         
         # Ordenar las acciones por el valor Q estimado
-        best_actions = [a for a in possible_actions if self.q_knowledge[self.get_next_state(state, a)].get(a, 0) == max_q_value]
+        best_actions = [a for a in self.actions if self.q_knowledge[state].get(a, 0) == max_q_value]
         best_action = choice(best_actions)
+        
         return best_action, max_q_value
     
     
-    def calculate_next_action_qvalue(self, next_state: Tuple[int, int], action: str) -> float:
+    def update_state_qvalue(self, next_state: Tuple[int, int], action: str, 
+                            arbitrary_reward:float=None) -> float:
         if next_state == self.current_state:
             return self.q_knowledge[self.current_state].get(action, 0)
         
@@ -64,14 +65,14 @@ class Agent:
         # Valor Q máximo en el siguiente estado
         _, q_max_a_st1 = self.get_best_action(next_state)
         
+        reward = arbitrary_reward if arbitrary_reward is not None else self.world_knowledge[next_state].reward
+        
         # Actualización de Q-learning
-        q = q_a_st + self.alpha * (self.world_knowledge[next_state].reward + (self.gamma * q_max_a_st1) - q_a_st)
+        q = q_a_st + self.alpha * (reward + (self.gamma * q_max_a_st1) - q_a_st)
+        
+        self.q_knowledge[self.current_state][action] = q
         
         return q
-    
-    def update_q_knowledge(self, action:str, next_state:Tuple[int, int]) -> None:
-        
-        self.q_knowledge[self.current_state][action] = self.calculate_next_action_qvalue(next_state, action)
     
     
     
@@ -82,14 +83,10 @@ class Agent:
                                 a for a in self.actions
                                 if self.get_next_state(self.current_state, a) != self.current_state
                                 ]
-            if not possible_actions:
-                return None
+            
             return choice(possible_actions)
         else:
-            best_action, max_q_value = self.get_best_action(self.current_state)
-            print(f'Best action: {best_action} with max_q_value: {max_q_value}')
-            #self.q_knowledge[self.current_state]['short_memory'].append(max_reward)
-            #self.current_reward = max_reward
+            best_action, _ = self.get_best_action(self.current_state)
             
             return best_action
     
@@ -101,15 +98,28 @@ class Agent:
             return self.current_state 
         
         new_state = self.get_next_state(self.current_state, next_action)
+        
+        if self.agent_life == 0:
+            
+            self.current_state = (1, 3)
+            self.agent_life = 20
+            
+            return self.current_state
             
         if new_state != self.current_state:        
             
-            self.update_q_knowledge(action=next_action, next_state=new_state)
+            self.update_state_qvalue(
+                                    action=next_action, 
+                                    next_state=new_state
+                                    )
             
             self.current_state = new_state
             
-            #if self.world_knowledge[self.current_state].char == 'A':
-            #    self.world_knowledge[self.current_state].with_apple = False
+            if self.world_knowledge[self.current_state].char == 'A':
+                self.world_knowledge[self.current_state].with_apple = False
+                self.agent_life += 1
+                
+            self.agent_life -= 1
         
         return self.current_state
     
@@ -119,6 +129,7 @@ class Agent:
         if ax is None:
             ax = plt.gca()
         ax.clear()
+        ax.set_title(f'Life: {self.agent_life}')
         
         for i in range(self.n_rows):
             for j in range(self.n_cols):
@@ -129,6 +140,7 @@ class Agent:
                 
                 max_value = max(actions.values())
                 knowledge_map[i, j] = max(actions.values())
+                
                 
                 ax.text(j, i, f'{round(max_value,2)}', ha='center',
                         va='center', color='white') 
