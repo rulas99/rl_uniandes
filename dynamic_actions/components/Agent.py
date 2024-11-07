@@ -7,7 +7,7 @@ from typing import List, Tuple, Dict
 
 class Agent:
     def __init__(self, x: int, y: int, world_knowledge:np_array,
-                agent_life: int = 20, gamma: float = 0.9,
+                agent_life: int = 100, gamma: float = 0.9,
                 actions: List[str] = ['up', 'down', 'left', 'right'],
                 alpha: float = 0.1, epsilon: float = 0.4,
                 color: Tuple[int, int, int] = (0, 0, 0)):
@@ -25,6 +25,7 @@ class Agent:
             (i, j): {}
             for i in range(self.n_rows) for j in range(self.n_cols)
             }
+        self.respawned_cnt = 0
     
     
     def get_next_state(self, base_state: Tuple[int, int], next_action: str) -> Tuple[int, int]:
@@ -102,7 +103,8 @@ class Agent:
         if self.agent_life == 0:
             
             self.current_state = (1, 3)
-            self.agent_life = 20
+            self.agent_life = 100
+            self.respawned_cnt += 1
             
             return self.current_state
             
@@ -116,10 +118,10 @@ class Agent:
             self.current_state = new_state
             
             if self.world_knowledge[self.current_state].char == 'A':
+                self.agent_life += 20 if self.world_knowledge[self.current_state].with_apple else 0
                 self.world_knowledge[self.current_state].with_apple = False
-                self.agent_life += 1
-                
-            self.agent_life -= 1
+            else:
+                self.agent_life -= 1
         
         return self.current_state
     
@@ -129,7 +131,7 @@ class Agent:
         if ax is None:
             ax = plt.gca()
         ax.clear()
-        ax.set_title(f'Life: {self.agent_life}')
+        ax.set_title(f'Life: {self.agent_life} - Respawned: {self.respawned_cnt}')
         
         for i in range(self.n_rows):
             for j in range(self.n_cols):
@@ -139,8 +141,7 @@ class Agent:
                     continue
                 
                 max_value = max(actions.values())
-                knowledge_map[i, j] = max(actions.values())
-                
+                knowledge_map[i, j] = max_value
                 
                 ax.text(j, i, f'{round(max_value,2)}', ha='center',
                         va='center', color='white') 
