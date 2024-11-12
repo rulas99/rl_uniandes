@@ -4,7 +4,7 @@ import matplotlib.pyplot as plt
 from .Agent import Agent
 from typing import List
 
-from .GridWorldCell import (WallCell, GrassCell, TreeAppleCell, 
+from .GridWorldCell import (WaterCell, GrassCell, TreeAppleCell, 
                             RespawnCell, PrincipalRespawnCell)
 
 AGENT_COLORS = ['#b510a7','#f28424','#05fcaa',
@@ -37,7 +37,7 @@ class HarvestWorld():
             for j in range(self.ascii_matrix.shape[1]):
                 cell_char = self.ascii_matrix[i, j]
                 if cell_char == 'W':
-                    object_map[i, j] = WallCell(i, j)
+                    object_map[i, j] = WaterCell(i, j)
                 elif cell_char in {'A', 'T'}:
                     with_apple = cell_char == 'A'
                     object_map[i, j] = TreeAppleCell(i, j, with_apple)
@@ -71,7 +71,7 @@ class HarvestWorld():
         if self.agents:
             x_coords, y_coords = zip(*[agent.current_state for agent in self.agents])
             ax.scatter(y_coords, x_coords, color=AGENT_COLORS[:len(self.agents)],
-                    marker='^', s=100)
+                    marker='^', s=200)
         
         
     def advance_timestep(self):

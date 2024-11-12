@@ -63,12 +63,12 @@ class TreeAppleCell(GridWorldCell):
         description_str = super().__str__()
         description_str += f'Apple: {self.with_apple}\n'
         return description_str
-
-
-class WallCell(GridWorldCell):
-    """Represents a wall cell that cannot be traversed."""
+        
+        
+class WaterCell(GridWorldCell):
+    """Represents a water cell that can only be crossed by swimming."""
     def __init__(self, x: int, y: int):
-        super().__init__(x=x, y=y, char='W', color=(157, 161, 159))
+        super().__init__(x=x, y=y, char='W', color=(156, 232, 255))
 
 
 class GrassCell(GridWorldCell):
