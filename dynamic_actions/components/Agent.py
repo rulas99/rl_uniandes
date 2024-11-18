@@ -9,34 +9,39 @@ class Agent:
     def __init__(self, x: int, y: int, world_knowledge:np_array,
                 agent_life: int = 100, gamma: float = 0.9,
                 actions: List[str] = ['up', 'down', 'left', 'right'],
-                alpha: float = 0.1, epsilon: float = 0.4,
+                alpha: float = 0.1, min_epsilon: float=0.25,
                 color: Tuple[int, int, int] = (0, 0, 0)):
         
-        self.current_state = (x, y)
+        self.current_state = (x, y, 'alto')
         self.actions = actions
         self.alpha = alpha
         self.gamma = gamma
-        self.epsilon = epsilon
+        self.min_epsilon = min_epsilon
+        self.timestep = 0
         self.color: Tuple[int, int, int] = color
         self.world_knowledge = world_knowledge
         self.n_rows, self.n_cols = world_knowledge.shape
         self.agent_life = agent_life
         self.q_knowledge: Dict[Tuple[int, int], Dict[str, float]] = {
-            (i, j): {}
-            for i in range(self.n_rows) for j in range(self.n_cols)
+            (i, j, s): {}
+            for i in range(self.n_rows) for j in range(self.n_cols) for s in ['muerto','bajo','medio','alto']
             }
-        self.respawned_cnt = 0
+        
+        self.episodes = 0
+        self.duration = []
     
     
     def get_next_state(self, base_state: Tuple[int, int], next_action: str) -> Tuple[int, int]:
+        agent_health = 'bajo' if self.agent_life < 40 else 'medio' if self.agent_life < 80 else 'alto'
+        agent_health = 'muerto' if self.agent_life == 0 else agent_health
         if next_action == 'up':
-            new_state = (max(base_state[0] - 1, 0), base_state[1])
+            new_state = (max(base_state[0] - 1, 0), base_state[1], agent_health)
         elif next_action == 'down':
-            new_state = (min(base_state[0] + 1, self.n_rows - 1), base_state[1])
+            new_state = (min(base_state[0] + 1, self.n_rows - 1), base_state[1], agent_health)
         elif next_action == 'left':
-            new_state = (base_state[0], max(base_state[1] - 1, 0))
+            new_state = (base_state[0], max(base_state[1] - 1, 0), agent_health)
         elif next_action == 'right':
-            new_state = (base_state[0], min(base_state[1] + 1, self.n_cols - 1))     
+            new_state = (base_state[0], min(base_state[1] + 1, self.n_cols - 1), agent_health)     
         else:
             return base_state
         
@@ -65,8 +70,8 @@ class Agent:
         
         # Valor Q máximo en el siguiente estado
         _, q_max_a_st1 = self.get_best_action(next_state)
-        
-        reward = arbitrary_reward if arbitrary_reward is not None else self.world_knowledge[next_state].reward
+                
+        reward = arbitrary_reward if arbitrary_reward is not None else self.world_knowledge[next_state[:2]].reward
         
         # Actualización de Q-learning
         q = q_a_st + self.alpha * (reward + (self.gamma * q_max_a_st1) - q_a_st)
@@ -79,7 +84,10 @@ class Agent:
     
     def choose_greedy_action(self) -> str:
         
-        if random() < self.epsilon:
+        # epsilon decay
+        epsilon = max(self.min_epsilon, 1 - self.timestep / 1000)
+        
+        if random() < epsilon:
             possible_actions = [ 
                                 a for a in self.actions
                                 if self.get_next_state(self.current_state, a) != self.current_state
@@ -98,13 +106,25 @@ class Agent:
         if next_action is None:
             return self.current_state 
         
+        self.timestep += 1
+        
         new_state = self.get_next_state(self.current_state, next_action)
         
         if self.agent_life == 0:
             
-            self.current_state = (1, 3)
+            self.current_state = (2, 11, 'alto')
             self.agent_life = 100
-            self.respawned_cnt += 1
+            self.episodes += 1
+            
+            self.duration.append(self.timestep)
+            
+            self.timestep = 0
+            
+            # Restore all apples
+            for i in range(self.n_rows):
+                for j in range(self.n_cols):
+                    if self.world_knowledge[i, j].char == 'T':
+                        self.world_knowledge[i, j].with_apple = True
             
             return self.current_state
             
@@ -117,9 +137,9 @@ class Agent:
             
             self.current_state = new_state
             
-            if self.world_knowledge[self.current_state].char == 'A':
-                self.agent_life += 20 if self.world_knowledge[self.current_state].with_apple else 0
-                self.world_knowledge[self.current_state].with_apple = False
+            if self.world_knowledge[self.current_state[:2]].char == 'A':
+                self.agent_life += 10 if self.world_knowledge[self.current_state[:2]].with_apple else 0
+                self.world_knowledge[self.current_state[:2]].with_apple = False
             else:
                 self.agent_life -= 1
         
@@ -127,15 +147,17 @@ class Agent:
     
     
     def plot_knowledge(self, ax)-> None:
+        agent_health = 'bajo' if self.agent_life < 40 else 'medio' if self.agent_life < 80 else 'alto'
+        agent_health = 'muerto' if self.agent_life == 0 else agent_health
         knowledge_map = np_zeros(self.world_knowledge.shape)
         if ax is None:
             ax = plt.gca()
         ax.clear()
-        ax.set_title(f'Life: {self.agent_life} - Respawned: {self.respawned_cnt}')
+        ax.set_title(f'Life: {self.agent_life} ({agent_health}) - Time: {self.timestep} - Respawned: {self.episodes}')
         
         for i in range(self.n_rows):
             for j in range(self.n_cols):
-                actions = self.q_knowledge[(i,j)]
+                actions = self.q_knowledge[(i, j, agent_health)]
                 if not actions:
                     knowledge_map[i, j] = np_nan
                     continue
