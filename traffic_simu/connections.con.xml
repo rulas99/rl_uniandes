@@ -1,0 +1,1 @@
+<?xml version="1.0" encoding="UTF-8"?> <connections> <!-- Conexión para el flujo de e1 a e2 --> <connection from="e1" to="e2" fromLane="0" toLane="0"/> <!-- Conexión para el flujo de e3 a e4 --> <connection from="e3" to="e4" fromLane="0" toLane="0"/> </connections>

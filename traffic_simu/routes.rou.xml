@@ -1,0 +1,9 @@
+<?xml version="1.0" encoding="UTF-8"?> <routes> <!-- Definición del tipo de vehículo --> <vType id="car" vClass="passenger" color="1,0,0" accel="2.6" decel="4.5" length="5.0" minGap="2.5" maxSpeed="13.9"/>
+
+<!-- Flujo para C1: desde la entrada oeste (e1) hacia la salida este (e2) -->
+<flow id="flow_C1" begin="0" end="600" number="40" from="e1" to="e2" type="car" departLane="0" departPos="random"/>
+
+<!-- Flujo para C2: desde la entrada norte (e3) hacia la salida sur (e4) -->
+<flow id="flow_C2" begin="0" end="600" number="20" from="e3" to="e4" type="car" departLane="0" departPos="random"/>
+
+</routes>
