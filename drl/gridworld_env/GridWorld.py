@@ -192,13 +192,14 @@ class GridWorldEnv(gym.Env):
         pass
     
     @staticmethod
-    def transform_obs(obs: Dict[str, np.ndarray]) -> np.ndarray:
-        # Regresar solo la posicion del agente normalizada [0,1] y en float32
-        return obs["agent"].astype(np.float32) / (obs["agent"].shape[0] - 1)
+    def transform_obs(obs: Dict[str, np.ndarray], size : int = 8) -> np.ndarray:
+        # Regresar solo la posicion del agente normalizada [0,1] y en int64
+        return (obs["agent"]-obs["target"]) / size
 
 # ---------- Registro para gym.make / gym.make_vec ----------
 gym.register(
     id="entropia/GridWorld-v0",
     entry_point=GridWorldEnv,
+    nondeterministic=True,
     max_episode_steps=300,  # evita episodios infinitos por diseño
 )
