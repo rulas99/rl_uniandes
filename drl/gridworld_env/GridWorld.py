@@ -1,5 +1,5 @@
 from __future__ import annotations
-from typing import Optional, Dict, Any
+from typing import Optional, Dict, Any, Iterable, Tuple
 import numpy as np
 import gymnasium as gym
 from gymnasium import spaces
@@ -36,6 +36,11 @@ class GridWorldEnv(gym.Env):
         reward_scale: float = 1.0,
         step_penalty: float = 0.0,
         render_mode: Optional[str] = None,
+        obstacles: Optional[Iterable[Tuple[int, int]]] = None,
+        holes: Optional[Iterable[Tuple[int, int]]] = None,
+        invalid_move_penalty: float = 0.0,   # penalización al intentar entrar a un obstáculo
+        hole_penalty: float = 0.0,           # castigo al caer en hueco (recompensa = -hole_penalty)
+        block_on_obstacle: bool = True,      # si True, el agente no se mueve al chocar con obstáculo
     ):
         assert size >= 2, "size debe ser >= 2"
         self.size = int(size)
@@ -46,6 +51,8 @@ class GridWorldEnv(gym.Env):
         # Estado interno
         self._agent_location = np.array([-1, -1], dtype=np.int64)
         self._target_location = np.array([-1, -1], dtype=np.int64)
+        
+        self.episode_step = 0
 
         # Espacios (usar dtypes concretos de numpy)
         self.observation_space = spaces.Dict(
@@ -63,7 +70,28 @@ class GridWorldEnv(gym.Env):
             2: np.array([-1, 0], dtype=np.int64),  # izquierda
             3: np.array([0, -1], dtype=np.int64),  # abajo
         }
+        
+        self.invalid_move_penalty = float(invalid_move_penalty)  # NEW
+        self.hole_penalty = float(hole_penalty)                  # NEW
+        self.block_on_obstacle = bool(block_on_obstacle)         # NEW
 
+        # Mapas booleanos de obstáculos y huecos, indexados como [x, y]
+        self._obstacles = np.zeros((self.size, self.size), dtype=bool)
+        self._holes = np.zeros((self.size, self.size), dtype=bool)
+        
+        if obstacles is not None:
+            for (x, y) in obstacles:
+                assert 0 <= x < self.size and 0 <= y < self.size, "obstacle fuera de rango"
+                self._obstacles[x, y] = True
+        if holes is not None:
+            for (x, y) in holes:
+                assert 0 <= x < self.size and 0 <= y < self.size, "hole fuera de rango"
+                self._holes[x, y] = True
+        
+        # Guardar copia de obstáculos/huecos originales para restaurar en cada reset
+        self._original_obstacles = self._obstacles.copy()
+        self._original_holes = self._holes.copy()
+        
         # Validación opcional del render_mode
         if self.render_mode is not None:
             assert self.render_mode in self.metadata["render_modes"], (
@@ -71,6 +99,26 @@ class GridWorldEnv(gym.Env):
             )
 
     # -------- helpers --------
+    def _is_obstacle(self, pos: np.ndarray) -> bool:  # NEW
+        x, y = int(pos[0]), int(pos[1])
+        return bool(self._obstacles[x, y])
+
+    def _is_hole(self, pos: np.ndarray) -> bool:      # NEW
+        x, y = int(pos[0]), int(pos[1])
+        return bool(self._holes[x, y])
+
+    def _sanitize_maps(self):  # Evita que start/goal estén bloqueados
+        # Restaurar obstáculos originales primero
+        self._obstacles[:] = self._original_obstacles
+        self._holes[:] = self._original_holes
+        # Luego limpiar solo las posiciones de agente y goal
+        ax, ay = int(self._agent_location[0]), int(self._agent_location[1])
+        tx, ty = int(self._target_location[0]), int(self._target_location[1])
+        self._obstacles[ax, ay] = False
+        self._holes[ax, ay] = False
+        self._obstacles[tx, ty] = False
+        self._holes[tx, ty] = False
+        
     def _get_obs(self) -> Dict[str, np.ndarray]:
         return {"agent": self._agent_location.copy(), 
                 "target": self._target_location.copy()}
@@ -84,11 +132,26 @@ class GridWorldEnv(gym.Env):
     def reset(self, *, seed: Optional[int] = None, options: Optional[dict] = None):
         super().reset(seed=seed)  # seeding correcto
 
-        start = None
-        goal = None
+        start = goal = None
+        opt_obstacles = opt_holes = None
         if options is not None:
             start = options.get("agent_start", None)
             goal  = options.get("goal", None)
+            opt_obstacles = options.get("obstacles", None)
+            opt_holes = options.get("holes", None)
+            
+        if opt_obstacles is not None:
+            self._obstacles[:] = False
+            for (x, y) in opt_obstacles:
+                assert 0 <= x < self.size and 0 <= y < self.size, "obstacle fuera de rango"
+                self._obstacles[x, y] = True
+            self._original_obstacles = self._obstacles.copy()  # Actualizar originales
+        if opt_holes is not None:
+            self._holes[:] = False
+            for (x, y) in opt_holes:
+                assert 0 <= x < self.size and 0 <= y < self.size, "hole fuera de rango"
+                self._holes[x, y] = True
+            self._original_holes = self._holes.copy()  # Actualizar originales
 
         # Agente
         if start is not None:
@@ -110,41 +173,62 @@ class GridWorldEnv(gym.Env):
             while np.array_equal(self._target_location, self._agent_location):
                 self._target_location = self.np_random.integers(0, self.size, size=2, dtype=np.int64)
 
+        self._sanitize_maps()
+        
         observation = self._get_obs()
         #observation = self._get_transformed_obs()
         info = self._get_info()
-
-        #if self.render_mode == "human":
-        #    self._render_frame()
-
+        self.episode_step = 0
+        
         return observation, info
 
     def step(self, action: int):
-        # Validación de acción
         assert self.action_space.contains(action), f"Acción inválida: {action}"
 
-        # Movimiento con límites (no sale de la grilla)
         direction = self._action_to_direction[int(action)]
-        self._agent_location = np.clip(self._agent_location + direction, 0, self.size - 1)
+        candidate = np.clip(self._agent_location + direction, 0, self.size - 1)
 
-        # Terminación si alcanza el objetivo
-        terminated = bool(np.array_equal(self._agent_location, self._target_location))
-        truncated = False  # usa TimeLimit o max_episode_steps en el registro si quieres cortar por tiempo
+        hit_obstacle = False
+        fell_in_hole = False
 
-        # Recompensa: shaped mínima (éxito vs. penalización por paso)
-        if terminated:
-            reward = self.reward_scale
+        if self._is_obstacle(candidate) or bool(np.array_equal(candidate, self._agent_location)):
+            hit_obstacle = True
+            if self.block_on_obstacle:
+                # no te mueves, sólo penalización opcional
+                new_pos = self._agent_location
+            else:
+                # permite pisar obstáculo (no recomendado)
+                new_pos = candidate
         else:
-            reward = -self.step_penalty
+            new_pos = candidate
+
+        self._agent_location = new_pos
+
+        # Chequeo de hueco
+        if self._is_hole(self._agent_location):
+            fell_in_hole = True
+
+        # Terminación
+        reached_goal = bool(np.array_equal(self._agent_location, self._target_location))
+        terminated = reached_goal or fell_in_hole
+
+        # Recompensa
+        if reached_goal:
+            reward = self.reward_scale
+        elif fell_in_hole:
+            reward = -self.hole_penalty
+        else:
+            # penalización por paso + penalización por intento inválido => penalizacion por quedarse en el mismo lugar
+            reward = -self.step_penalty - (self.invalid_move_penalty if hit_obstacle else 0.0)
 
         observation = self._get_obs()
-        #observation = self._get_transformed_obs()
         info = self._get_info()
+        # NEW ---- añade flags útiles a info
+        info.update({"hit_obstacle": hit_obstacle, "fell_in_hole": fell_in_hole})
 
-        #if self.render_mode == "human":
-        #    self._render_frame()
+        self.episode_step += 1
 
-        # Gymnasium espera reward como float nativo
+        truncated = False
         return observation, float(reward), terminated, truncated, info
 
     # -------- rendering --------
@@ -157,32 +241,30 @@ class GridWorldEnv(gym.Env):
             return None
 
     def _ascii_board(self) -> str:
-        """Generate ASCII representation of the grid world."""
         rows = []
-        # Print from top to bottom (y descending) to match standard grid visualization
         for y in range(self.size - 1, -1, -1):
             row = []
             for x in range(self.size):
                 pos = np.array([x, y], dtype=np.int64)
                 if np.array_equal(pos, self._agent_location):
                     if np.array_equal(pos, self._target_location):
-                        # Agent reached target - show both
-                        row.append("@")  # or "X" to indicate completion
+                        row.append("@")
                     else:
                         row.append("A")
                 elif np.array_equal(pos, self._target_location):
                     row.append("T")
+                # dibuja obstáculo/hueco si la celda está libre de A/T
+                elif self._obstacles[x, y]:
+                    row.append("#")
+                elif self._holes[x, y]:
+                    row.append("O")
                 else:
                     row.append(".")
             rows.append(" ".join(row))
-        
-        # Add coordinate labels for better debugging
         result = "\n".join(rows) + "\n"
-        if self.size <= 10:  # Only show coordinates for small grids
-            # Add x-axis labels
+        if self.size <= 10:
             x_labels = " ".join(str(i) for i in range(self.size))
             result += f" {x_labels}\n"
-        
         return result
 
     def _render_frame(self):
@@ -192,10 +274,10 @@ class GridWorldEnv(gym.Env):
         pass
     
     @staticmethod
-    def transform_obs(obs: Dict[str, np.ndarray], size : int = 8) -> np.ndarray:
-        # Regresar solo la posicion del agente normalizada [0,1] y en int64
-        #return (obs["agent"]-obs["target"]) / size
-        return obs["agent"] / size
+    def transform_obs(obs, size: int) -> np.ndarray:
+        agent_pos = obs["agent"] / (size - 1)
+        target_pos = obs["target"] / (size - 1)
+        return np.concatenate([agent_pos, target_pos]).astype(np.float32)
         
         
 # ---------- Registro para gym.make / gym.make_vec ----------
@@ -203,5 +285,5 @@ gym.register(
     id="entropia/GridWorld-v0",
     entry_point=GridWorldEnv,
     nondeterministic=True,
-    max_episode_steps=300,  # evita episodios infinitos por diseño
+    max_episode_steps=150,  # evita episodios infinitos por diseño
 )
