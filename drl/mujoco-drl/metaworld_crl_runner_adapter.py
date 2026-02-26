@@ -108,7 +108,7 @@ def resolve_task_sequence(task_preset: str, tasks_csv: Optional[str]) -> List[st
             raise RuntimeError(f"Solo se detectaron {len(tasks)} tareas v3.")
         return tasks[:50]
     if preset == "smoke2":
-        return ["reach-v3", "push-v3"]
+        return ["reach-v3","push-v3"]
 
     raise ValueError("`--task-preset` inválido. Usa cw10/cw20/mt10/mt50/smoke2.")
 
@@ -150,15 +150,46 @@ def _make_mt1_env(
     render_mode: Optional[str],
     disable_env_checker: bool,
     relax_obs_bounds: bool,
+    reward_func_version: Optional[str],
 ) -> gym.Env:
     _ensure_metaworld()
-    env = gym.make(
-        "Meta-World/MT1",
+    make_kwargs: Dict[str, Any] = dict(
         env_name=env_name,
         seed=seed,
         render_mode=render_mode,
         disable_env_checker=disable_env_checker,
     )
+    env: gym.Env
+    if reward_func_version:
+        try:
+            env = gym.make(
+                "Meta-World/MT1",
+                reward_func_version=reward_func_version,
+                **make_kwargs,
+            )
+        except TypeError as exc:
+            if "reward_func_version" not in str(exc):
+                raise
+            try:
+                env = gym.make(
+                    "Meta-World/MT1",
+                    reward_function_version=reward_func_version,
+                    **make_kwargs,
+                )
+                print(
+                    "[WARN] MT1 wrapper usa reward_function_version (legacy); "
+                    "aplicando compatibilidad."
+                )
+            except TypeError as legacy_exc:
+                if "reward_function_version" not in str(legacy_exc):
+                    raise
+                print(
+                    "[WARN] MT1 wrapper no soporta reward_func_version "
+                    "ni reward_function_version; usando reward por defecto."
+                )
+                env = gym.make("Meta-World/MT1", **make_kwargs)
+    else:
+        env = gym.make("Meta-World/MT1", **make_kwargs)
     env = gym.wrappers.TimeLimit(env, max_episode_steps=max_episode_steps)
     if relax_obs_bounds:
         env = RelaxedObsBounds(env)
@@ -179,6 +210,7 @@ class ContinualTaskSuiteEnv(gym.Env[np.ndarray, np.ndarray]):
         render_mode: Optional[str] = None,
         disable_env_checker: bool = True,
         relax_obs_bounds: bool = True,
+        reward_func_version: Optional[str] = "v2",
     ):
         super().__init__()
         if not task_names:
@@ -190,6 +222,7 @@ class ContinualTaskSuiteEnv(gym.Env[np.ndarray, np.ndarray]):
         self._rng = np.random.default_rng(seed)
         self._active_task: Optional[str] = self.unique_tasks[0]
         self._current_task: Optional[str] = None
+        self._ep_success = 0.0
 
         self._envs: Dict[str, gym.Env] = {}
         for i, task in enumerate(self.unique_tasks):
@@ -200,6 +233,7 @@ class ContinualTaskSuiteEnv(gym.Env[np.ndarray, np.ndarray]):
                 render_mode=render_mode,
                 disable_env_checker=disable_env_checker,
                 relax_obs_bounds=relax_obs_bounds,
+                reward_func_version=reward_func_version,
             )
 
         base_env = self._envs[self.unique_tasks[0]]
@@ -275,8 +309,11 @@ class ContinualTaskSuiteEnv(gym.Env[np.ndarray, np.ndarray]):
         child_options.pop("task_name", None)
         obs, info = self._envs[task].reset(seed=seed, options=child_options or None)
         self._current_task = task
+        self._ep_success = 0.0
         idx = self._task_idx(task)
-        return self._augment_obs(obs, task), self._augment_info(info, task, idx)
+        out_info = self._augment_info(info, task, idx)
+        out_info["is_success"] = self._ep_success
+        return self._augment_obs(obs, task), out_info
 
     def step(
         self, action: np.ndarray
@@ -286,12 +323,18 @@ class ContinualTaskSuiteEnv(gym.Env[np.ndarray, np.ndarray]):
         env = self._envs[self._current_task]
         obs, reward, terminated, truncated, info = env.step(action)
         idx = self._task_idx(self._current_task)
+        out_info = self._augment_info(info, self._current_task, idx)
+        try:
+            self._ep_success = max(self._ep_success, float(out_info.get("is_success", 0.0)))
+        except Exception:
+            pass
+        out_info["is_success"] = float(self._ep_success)
         return (
             self._augment_obs(obs, self._current_task),
             float(reward),
             bool(terminated),
             bool(truncated),
-            self._augment_info(info, self._current_task, idx),
+            out_info,
         )
 
     def close(self) -> None:
@@ -381,11 +424,60 @@ class RoutedAdapterBackboneExtractor(BaseFeaturesExtractor):
         one_hot = obs[..., self.state_dim : self.state_dim + self.num_tasks]
 
         h = self.backbone(state)
-        delta = th.zeros_like(h)
+        task_indices = th.argmax(one_hot, dim=-1)
+        flat_task_indices = task_indices.reshape(-1)
+        if flat_task_indices.numel() == 0:
+            return h
+
+        # Camino rápido: batch mono-tarea (entrenamiento continual estándar).
+        if bool(th.all(flat_task_indices == flat_task_indices[0]).item()):
+            idx = int(flat_task_indices[0].item())
+            return h + self.adapters[idx](h)
+
+        # Camino general: batch mixto de tareas (p.ej. evaluación multitarea).
+        flat_h = h.reshape(-1, h.shape[-1])
+        flat_delta = th.zeros_like(flat_h)
         for idx, adapter in enumerate(self.adapters):
-            gate = one_hot[..., idx : idx + 1]
-            delta = delta + gate * adapter(h)
-        return h + delta
+            mask = flat_task_indices == idx
+            if not bool(mask.any().item()):
+                continue
+            flat_delta[mask] = adapter(flat_h[mask])
+        return h + flat_delta.view_as(h)
+
+
+class BackboneOnlyExtractor(BaseFeaturesExtractor):
+    """Mismo backbone base sin adaptadores (baseline de capacidad equivalente)."""
+
+    def __init__(
+        self,
+        observation_space: spaces.Box,
+        features_dim: int = 256,
+        num_tasks: int = 0,
+        backbone_hidden_dim: int = 256,
+    ):
+        if not isinstance(observation_space, spaces.Box):
+            raise TypeError("BackboneOnlyExtractor requiere observation_space Box.")
+        super().__init__(observation_space, features_dim)
+
+        obs_dim = int(np.prod(observation_space.shape))
+        self.num_tasks = max(0, int(num_tasks))
+        if self.num_tasks > 0 and obs_dim <= self.num_tasks:
+            raise ValueError(
+                "obs_dim debe ser mayor a num_tasks para separar state/task-id."
+            )
+        self.state_dim = obs_dim - self.num_tasks if self.num_tasks > 0 else obs_dim
+        self._features_dim = int(features_dim)
+
+        self.backbone = nn.Sequential(
+            nn.Linear(self.state_dim, backbone_hidden_dim),
+            nn.ReLU(),
+            nn.Linear(backbone_hidden_dim, features_dim),
+            nn.ReLU(),
+        )
+
+    def forward(self, obs: th.Tensor) -> th.Tensor:
+        state = obs[..., : self.state_dim]
+        return self.backbone(state)
 
 
 def _iter_routed_extractors(policy: Any) -> List[RoutedAdapterBackboneExtractor]:
@@ -412,40 +504,100 @@ def _iter_routed_extractors(policy: Any) -> List[RoutedAdapterBackboneExtractor]
     return extractors
 
 
+def _adapter_task_idx_from_param_name(name: str) -> Optional[int]:
+    parts = name.split(".")
+    for i, part in enumerate(parts[:-1]):
+        if part != "adapters":
+            continue
+        maybe_idx = parts[i + 1]
+        if maybe_idx.isdigit():
+            return int(maybe_idx)
+    return None
+
+
 def _set_trainable_for_task(
     model: BaseAlgorithm,
     task_idx: int,
     phase: int,
     warmup_tasks: int,
-    train_heads_after_warmup: bool,
+    train_actor_heads_after_warmup: bool,
+    train_full_critic_after_warmup: bool,
 ) -> str:
-    if phase <= warmup_tasks:
-        for p in model.policy.parameters():
-            p.requires_grad = True
-        return "warmup_all_trainable"
+    policy = model.policy
 
-    for p in model.policy.parameters():
+    if phase <= warmup_tasks:
+        for name, p in policy.named_parameters():
+            if name.startswith("critic_target."):
+                p.requires_grad = False
+                continue
+            adapter_idx = _adapter_task_idx_from_param_name(name)
+            if adapter_idx is None:
+                p.requires_grad = True
+            else:
+                p.requires_grad = adapter_idx == task_idx
+        return "warmup_backbone_heads+active_adapter"
+
+    for p in policy.parameters():
         p.requires_grad = False
 
-    extractors = _iter_routed_extractors(model.policy)
+    extractors = _iter_routed_extractors(policy)
     if not extractors:
         raise TypeError(
             "No se detectó RoutedAdapterBackboneExtractor en la policy. "
-            "Revisa --lora-enabled y policy_kwargs."
+            "Revisa --adapter-enabled y policy_kwargs."
         )
-    for extractor in extractors:
-        extractor.unfreeze_adapter(task_idx)
 
-    if train_heads_after_warmup:
-        for name, p in model.policy.named_parameters():
-            if name.startswith("critic_target."):
-                continue
-            if "features_extractor." in name:
-                continue
+    actor = getattr(policy, "actor", None)
+    actor_extractor = getattr(actor, "features_extractor", None)
+    if isinstance(actor_extractor, RoutedAdapterBackboneExtractor):
+        actor_extractor.unfreeze_adapter(task_idx)
+    else:
+        # Fallback genérico (PPO u otras policies sin actor separado).
+        for extractor in extractors:
+            extractor.unfreeze_adapter(task_idx)
+
+    mode_parts = ["actor_adapter"]
+
+    # Crítico para adaptación motora en nuevas tareas: siempre entrenable.
+    if actor is not None and hasattr(actor, "mu"):
+        for p in actor.mu.parameters():
             p.requires_grad = True
-        return "adapter_plus_heads"
+        mode_parts.append("actor_mu")
+    if actor is not None and hasattr(actor, "log_std"):
+        for p in actor.log_std.parameters():
+            p.requires_grad = True
+        mode_parts.append("actor_log_std")
 
-    return "adapter_only"
+    if train_actor_heads_after_warmup:
+        if actor is not None:
+            for name, p in actor.named_parameters():
+                if "features_extractor." in name:
+                    continue
+                if name.startswith("mu.") or name.startswith("log_std."):
+                    continue
+                p.requires_grad = True
+        else:
+            for name, p in policy.named_parameters():
+                if name.startswith("critic_target."):
+                    continue
+                if "features_extractor." in name:
+                    continue
+                p.requires_grad = True
+        mode_parts.append("actor_heads_extra")
+
+    critic = getattr(policy, "critic", None)
+    if critic is not None:
+        if train_full_critic_after_warmup:
+            for p in critic.parameters():
+                p.requires_grad = True
+            mode_parts.append("critic_full")
+        else:
+            critic_extractor = getattr(critic, "features_extractor", None)
+            if isinstance(critic_extractor, RoutedAdapterBackboneExtractor):
+                critic_extractor.unfreeze_adapter(task_idx)
+                mode_parts.append("critic_adapter")
+
+    return "+".join(mode_parts)
 
 
 def _count_trainable_params(model: BaseAlgorithm) -> int:
@@ -465,19 +617,89 @@ def _count_trainable_adapter_params(model: BaseAlgorithm) -> int:
     return trainable
 
 
+def _clone_optimizer(optimizer: th.optim.Optimizer, params: Iterable[th.nn.Parameter]) -> th.optim.Optimizer:
+    cls = optimizer.__class__
+    kwargs = dict(optimizer.defaults)
+    if optimizer.param_groups:
+        kwargs["lr"] = float(optimizer.param_groups[0].get("lr", kwargs.get("lr", 0.0)))
+    return cls(params, **kwargs)
+
+
+def _reset_sac_optimizers(
+    model: BaseAlgorithm,
+    reset_ent_coef: bool,
+    ent_coef_log_reset_value: float,
+) -> List[str]:
+    reset_names: List[str] = []
+    policy = model.policy
+
+    actor = getattr(policy, "actor", None)
+    actor_opt = getattr(actor, "optimizer", None)
+    if actor is not None and actor_opt is not None:
+        actor.optimizer = _clone_optimizer(actor_opt, actor.parameters())
+        reset_names.append("actor")
+
+    critic = getattr(policy, "critic", None)
+    critic_opt = getattr(critic, "optimizer", None)
+    if critic is not None and critic_opt is not None:
+        critic.optimizer = _clone_optimizer(critic_opt, critic.parameters())
+        reset_names.append("critic")
+
+    ent_opt = getattr(model, "ent_coef_optimizer", None)
+    log_ent_coef = getattr(model, "log_ent_coef", None)
+    if ent_opt is not None and log_ent_coef is not None:
+        if reset_ent_coef:
+            with th.no_grad():
+                log_ent_coef.fill_(float(ent_coef_log_reset_value))
+        model.ent_coef_optimizer = _clone_optimizer(ent_opt, [log_ent_coef])
+        if reset_ent_coef:
+            reset_names.append("ent_coef(reset)")
+        else:
+            reset_names.append("ent_coef(opt)")
+
+    return reset_names
+
+
+def _reset_optimizers_for_task(
+    model: BaseAlgorithm,
+    reset_ent_coef: bool,
+    ent_coef_log_reset_value: float,
+) -> List[str]:
+    # Protocolo CW relevante para SAC.
+    if isinstance(model, SAC):
+        return _reset_sac_optimizers(model, reset_ent_coef, ent_coef_log_reset_value)
+
+    reset_names: List[str] = []
+    policy_opt = getattr(model.policy, "optimizer", None)
+    if policy_opt is not None:
+        model.policy.optimizer = _clone_optimizer(policy_opt, model.policy.parameters())
+        reset_names.append("policy")
+    return reset_names
+
+
+def _configure_sac_phase_random_warmup(
+    model: BaseAlgorithm, random_steps_per_task: int
+) -> Optional[int]:
+    if not isinstance(model, SAC):
+        return None
+    steps = max(0, int(random_steps_per_task))
+    model.learning_starts = int(model.num_timesteps + steps)
+    return int(model.learning_starts)
+
+
 def _build_model(
     algo: str,
     env: gym.Env,
     seed: int,
     device: str,
     tensorboard_dir: Path,
-    lora_enabled: bool,
-    lora_num_tasks: int,
-    lora_rank: int,
-    lora_alpha: float,
-    lora_features_dim: int,
-    lora_backbone_hidden_dim: int,
-    lora_share_features_extractor: bool,
+    adapter_enabled: bool,
+    adapter_num_tasks: int,
+    adapter_rank: int,
+    adapter_alpha: float,
+    adapter_features_dim: int,
+    adapter_backbone_hidden_dim: int,
+    append_task_id: bool,
     sac_learning_rate: float,
     sac_batch_size: int,
     sac_gradient_steps: int,
@@ -487,23 +709,35 @@ def _build_model(
     algo = algo.lower()
     policy_kwargs: Dict[str, Any] = dict(net_arch=[256, 256])
 
-    if lora_enabled:
+    if adapter_enabled:
         policy_kwargs.update(
             dict(
                 features_extractor_class=RoutedAdapterBackboneExtractor,
                 features_extractor_kwargs=dict(
-                    features_dim=lora_features_dim,
-                    num_tasks=lora_num_tasks,
-                    adapter_rank=lora_rank,
-                    adapter_alpha=lora_alpha,
-                    backbone_hidden_dim=lora_backbone_hidden_dim,
+                    features_dim=adapter_features_dim,
+                    num_tasks=adapter_num_tasks,
+                    adapter_rank=adapter_rank,
+                    adapter_alpha=adapter_alpha,
+                    backbone_hidden_dim=adapter_backbone_hidden_dim,
+                ),
+            )
+        )
+    else:
+        policy_kwargs.update(
+            dict(
+                features_extractor_class=BackboneOnlyExtractor,
+                features_extractor_kwargs=dict(
+                    features_dim=adapter_features_dim,
+                    num_tasks=adapter_num_tasks if append_task_id else 0,
+                    backbone_hidden_dim=adapter_backbone_hidden_dim,
                 ),
             )
         )
 
     if algo == "sac":
-        if lora_enabled:
-            policy_kwargs["share_features_extractor"] = bool(lora_share_features_extractor)
+        if adapter_enabled:
+            # En SAC/SB3 mantenemos extractores separados: evita gradientes ambiguos.
+            policy_kwargs["share_features_extractor"] = False
         return SAC(
             "MlpPolicy",
             env,
@@ -519,7 +753,7 @@ def _build_model(
             gradient_steps=sac_gradient_steps,
             buffer_size=sac_buffer_size,
             learning_starts=sac_learning_starts,
-            ent_coef="auto",
+            ent_coef="auto_0.1",
             target_entropy="auto",
             policy_kwargs=policy_kwargs,
         )
@@ -556,16 +790,21 @@ def evaluate_task(
         done = False
         ep_ret = 0.0
         ep_len = 0
-        last_info: Dict[str, Any] = {}
+        ep_success = 0.0
         while not done:
             action, _ = model.predict(obs, deterministic=True)
             obs, reward, terminated, truncated, info = env.step(action)
             done = bool(terminated or truncated)
             ep_ret += float(reward)
             ep_len += 1
-            last_info = info
+            step_success = info.get("is_success", info.get("success", 0.0))
+            try:
+                if float(step_success) > 0.5:
+                    ep_success = 1.0
+            except Exception:
+                pass
         returns.append(ep_ret)
-        successes.append(float(last_info.get("is_success", last_info.get("success", 0.0))))
+        successes.append(ep_success)
         lengths.append(ep_len)
 
     return {
@@ -627,6 +866,7 @@ class HealthPlotCheckpointCallback(BaseCallback):
         self.active_tasks: List[str] = []
 
         self._successes: List[float] = []
+        self._running_ep_success: Dict[int, float] = {}
         self.best_score = -float("inf")
         self.t0 = time.time()
 
@@ -775,18 +1015,30 @@ class HealthPlotCheckpointCallback(BaseCallback):
                     f"{self.improvement_metric}={score:.4f} -> {best_step.name}.zip"
                 )
 
+    def reset_task_window(self, model: Optional[BaseAlgorithm] = None) -> None:
+        self._successes.clear()
+        self._running_ep_success.clear()
+        if model is not None and getattr(model, "ep_info_buffer", None) is not None:
+            try:
+                model.ep_info_buffer.clear()
+            except Exception:
+                pass
+
     def _on_step(self) -> bool:
         dones = self.locals.get("dones", [])
         infos = self.locals.get("infos", [])
-        for done, info in zip(dones, infos):
-            if not done:
-                continue
+        for env_idx, (done, info) in enumerate(zip(dones, infos)):
             terminal_info = info.get("terminal_info", info)
-            success = terminal_info.get("is_success", terminal_info.get("success", 0.0))
+            step_success = terminal_info.get("is_success", terminal_info.get("success", 0.0))
+            prev_success = self._running_ep_success.get(env_idx, 0.0)
             try:
-                self._successes.append(float(success))
+                step_success_value = float(step_success)
             except Exception:
-                self._successes.append(0.0)
+                step_success_value = 0.0
+            self._running_ep_success[env_idx] = max(prev_success, step_success_value)
+            if done:
+                self._successes.append(float(self._running_ep_success.get(env_idx, 0.0)))
+                self._running_ep_success[env_idx] = 0.0
 
         # Checkpoint periódico
         if (self.num_timesteps - self.last_ckpt_step) >= self.checkpoint_freq:
@@ -910,6 +1162,7 @@ def run_continual(args: argparse.Namespace, tasks: List[str], run_dir: Path) -> 
             render_mode=None,
             disable_env_checker=args.disable_env_checker,
             relax_obs_bounds=args.relax_obs_bounds,
+            reward_func_version=args.reward_func_version,
         ),
         filename=str(run_dir / "train.monitor.csv"),
         info_keywords=("task_name", "task_idx", "is_success"),
@@ -923,13 +1176,14 @@ def run_continual(args: argparse.Namespace, tasks: List[str], run_dir: Path) -> 
             render_mode=None,
             disable_env_checker=args.disable_env_checker,
             relax_obs_bounds=args.relax_obs_bounds,
+            reward_func_version=args.reward_func_version,
         ),
         filename=str(run_dir / "eval.monitor.csv"),
         info_keywords=("task_name", "task_idx", "is_success"),
     )
 
-    if args.lora_enabled and not args.append_task_id:
-        raise RuntimeError("Con --lora-enabled debes usar --append-task-id para routing por tarea.")
+    if args.adapter_enabled and not args.append_task_id:
+        raise RuntimeError("Con --adapter-enabled debes usar --append-task-id para routing por tarea.")
 
     model = _build_model(
         algo=args.algo,
@@ -937,13 +1191,13 @@ def run_continual(args: argparse.Namespace, tasks: List[str], run_dir: Path) -> 
         seed=args.seed,
         device=args.device,
         tensorboard_dir=run_dir / "tb",
-        lora_enabled=args.lora_enabled,
-        lora_num_tasks=len(unique_tasks),
-        lora_rank=args.lora_rank,
-        lora_alpha=args.lora_alpha,
-        lora_features_dim=args.lora_features_dim,
-        lora_backbone_hidden_dim=args.lora_backbone_hidden_dim,
-        lora_share_features_extractor=args.lora_share_features_extractor,
+        adapter_enabled=args.adapter_enabled,
+        adapter_num_tasks=len(unique_tasks),
+        adapter_rank=args.adapter_rank,
+        adapter_alpha=args.adapter_alpha,
+        adapter_features_dim=args.adapter_features_dim,
+        adapter_backbone_hidden_dim=args.adapter_backbone_hidden_dim,
+        append_task_id=args.append_task_id,
         sac_learning_rate=args.sac_learning_rate,
         sac_batch_size=args.sac_batch_size,
         sac_gradient_steps=args.sac_gradient_steps,
@@ -974,19 +1228,44 @@ def run_continual(args: argparse.Namespace, tasks: List[str], run_dir: Path) -> 
         )
         _suite_env(train_env).set_task(task)
         task_idx = _suite_env(train_env)._task_idx(task)
+        if args.reset_metric_windows_every_task:
+            health_cb.reset_task_window(model)
 
-        if args.lora_enabled:
+        if args.adapter_enabled:
             mode = _set_trainable_for_task(
                 model=model,
                 task_idx=task_idx,
                 phase=phase,
-                warmup_tasks=args.lora_warmup_tasks,
-                train_heads_after_warmup=args.lora_train_heads_after_warmup,
+                warmup_tasks=args.adapter_warmup_tasks,
+                train_actor_heads_after_warmup=args.adapter_train_actor_heads_after_warmup,
+                train_full_critic_after_warmup=args.adapter_train_full_critic_after_warmup,
             )
             print(
                 f"[PEFT] phase={phase} task={task} task_idx={task_idx} mode={mode} "
                 f"trainable={_count_trainable_params(model):,} "
                 f"trainable_adapters={_count_trainable_adapter_params(model):,}"
+            )
+
+        if args.reset_optimizers_every_task:
+            reset_optimizers = _reset_optimizers_for_task(
+                model=model,
+                reset_ent_coef=args.reset_ent_coef_every_task,
+                ent_coef_log_reset_value=args.ent_coef_reset_log_value,
+            )
+            if reset_optimizers:
+                print(
+                    f"[OPT] phase={phase} reset={','.join(reset_optimizers)}"
+                )
+
+        warmup_until = _configure_sac_phase_random_warmup(
+            model=model,
+            random_steps_per_task=args.sac_random_steps_per_task,
+        )
+        if warmup_until is not None:
+            warmup_from = max(0, warmup_until - max(0, int(args.sac_random_steps_per_task)))
+            print(
+                f"[SAC] phase={phase} random_warmup_steps={args.sac_random_steps_per_task} "
+                f"learning_starts={warmup_from}->{warmup_until}"
             )
 
         model.learn(
@@ -1044,13 +1323,22 @@ def run_continual(args: argparse.Namespace, tasks: List[str], run_dir: Path) -> 
         "task_preset": args.task_preset,
         "tasks_sequence": tasks,
         "unique_tasks": unique_tasks,
-        "lora_enabled": args.lora_enabled,
-        "lora_rank": args.lora_rank if args.lora_enabled else None,
-        "lora_alpha": args.lora_alpha if args.lora_enabled else None,
-        "lora_warmup_tasks": args.lora_warmup_tasks if args.lora_enabled else None,
-        "lora_train_heads_after_warmup": (
-            args.lora_train_heads_after_warmup if args.lora_enabled else None
+        "adapter_enabled": args.adapter_enabled,
+        "adapter_rank": args.adapter_rank if args.adapter_enabled else None,
+        "adapter_alpha": args.adapter_alpha if args.adapter_enabled else None,
+        "adapter_warmup_tasks": args.adapter_warmup_tasks if args.adapter_enabled else None,
+        "adapter_train_actor_heads_after_warmup": (
+            args.adapter_train_actor_heads_after_warmup if args.adapter_enabled else None
         ),
+        "adapter_train_full_critic_after_warmup": (
+            args.adapter_train_full_critic_after_warmup if args.adapter_enabled else None
+        ),
+        "reward_func_version": args.reward_func_version,
+        "reset_optimizers_every_task": args.reset_optimizers_every_task,
+        "reset_ent_coef_every_task": args.reset_ent_coef_every_task,
+        "ent_coef_reset_log_value": args.ent_coef_reset_log_value if args.algo == "sac" else None,
+        "reset_metric_windows_every_task": args.reset_metric_windows_every_task,
+        "sac_random_steps_per_task": args.sac_random_steps_per_task if args.algo == "sac" else None,
         "timesteps": total_steps,
         "elapsed_sec": elapsed,
         "avg_final_success_rate": float(np.mean(final_successes)) if final_successes else float("nan"),
@@ -1068,6 +1356,7 @@ def run_multitask(args: argparse.Namespace, tasks: List[str], run_dir: Path) -> 
             render_mode=None,
             disable_env_checker=args.disable_env_checker,
             relax_obs_bounds=args.relax_obs_bounds,
+            reward_func_version=args.reward_func_version,
         ),
         filename=str(run_dir / "train.monitor.csv"),
         info_keywords=("task_name", "task_idx", "is_success"),
@@ -1084,6 +1373,7 @@ def run_multitask(args: argparse.Namespace, tasks: List[str], run_dir: Path) -> 
             render_mode=None,
             disable_env_checker=args.disable_env_checker,
             relax_obs_bounds=args.relax_obs_bounds,
+            reward_func_version=args.reward_func_version,
         ),
         filename=str(run_dir / "eval.monitor.csv"),
         info_keywords=("task_name", "task_idx", "is_success"),
@@ -1095,13 +1385,13 @@ def run_multitask(args: argparse.Namespace, tasks: List[str], run_dir: Path) -> 
         seed=args.seed,
         device=args.device,
         tensorboard_dir=run_dir / "tb",
-        lora_enabled=args.lora_enabled,
-        lora_num_tasks=len(list(dict.fromkeys(tasks))),
-        lora_rank=args.lora_rank,
-        lora_alpha=args.lora_alpha,
-        lora_features_dim=args.lora_features_dim,
-        lora_backbone_hidden_dim=args.lora_backbone_hidden_dim,
-        lora_share_features_extractor=args.lora_share_features_extractor,
+        adapter_enabled=args.adapter_enabled,
+        adapter_num_tasks=len(list(dict.fromkeys(tasks))),
+        adapter_rank=args.adapter_rank,
+        adapter_alpha=args.adapter_alpha,
+        adapter_features_dim=args.adapter_features_dim,
+        adapter_backbone_hidden_dim=args.adapter_backbone_hidden_dim,
+        append_task_id=args.append_task_id,
         sac_learning_rate=args.sac_learning_rate,
         sac_batch_size=args.sac_batch_size,
         sac_gradient_steps=args.sac_gradient_steps,
@@ -1162,7 +1452,8 @@ def run_multitask(args: argparse.Namespace, tasks: List[str], run_dir: Path) -> 
         "task_preset": args.task_preset,
         "tasks_sequence": tasks,
         "unique_tasks": unique_tasks,
-        "lora_enabled": args.lora_enabled,
+        "adapter_enabled": args.adapter_enabled,
+        "reward_func_version": args.reward_func_version,
         "timesteps": args.total_steps,
         "elapsed_sec": elapsed,
         "avg_success_rate": float(np.mean(success_rates)) if success_rates else float("nan"),
@@ -1175,46 +1466,133 @@ def build_parser() -> argparse.ArgumentParser:
     p.add_argument("--algo", choices=["sac", "ppo"], default="sac")
     p.add_argument("--task-preset", default="cw10")
     p.add_argument("--tasks", type=str, default=None, help="CSV de tareas v3")
-    p.add_argument("--steps-per-task", type=int, default=1_000_000)
+    p.add_argument("--steps-per-task", type=int, default=550_000)
     p.add_argument("--total-steps", type=int, default=1_000_000)
     p.add_argument("--eval-episodes", type=int, default=10)
     p.add_argument("--max-episode-steps", type=int, default=200)
+    p.add_argument(
+        "--reward-func-version",
+        type=str,
+        default="v2",
+        help="Versión de reward en Meta-World (ej. v2). Usa '' para default de la env.",
+    )
     p.add_argument("--seed", type=int, default=42)
     p.add_argument("--device", default="auto")
     p.add_argument("--append-task-id", action="store_true")
     p.add_argument(
-        "--lora-enabled",
+        "--adapter-enabled",
+        dest="adapter_enabled",
         action=argparse.BooleanOptionalAction,
         default=True,
         help="Activar backbone compartido + adaptadores low-rank por tarea.",
     )
-    p.add_argument("--lora-rank", type=int, default=16)
-    p.add_argument("--lora-alpha", type=float, default=16.0)
-    p.add_argument("--lora-features-dim", type=int, default=256)
-    p.add_argument("--lora-backbone-hidden-dim", type=int, default=256)
     p.add_argument(
-        "--lora-warmup-tasks",
+        "--lora-enabled",
+        dest="adapter_enabled",
+        action=argparse.BooleanOptionalAction,
+        help=argparse.SUPPRESS,
+    )
+    p.add_argument("--adapter-rank", dest="adapter_rank", type=int, default=16)
+    p.add_argument("--lora-rank", dest="adapter_rank", type=int, help=argparse.SUPPRESS)
+    p.add_argument("--adapter-alpha", dest="adapter_alpha", type=float, default=16.0)
+    p.add_argument("--lora-alpha", dest="adapter_alpha", type=float, help=argparse.SUPPRESS)
+    p.add_argument("--adapter-features-dim", dest="adapter_features_dim", type=int, default=256)
+    p.add_argument(
+        "--lora-features-dim",
+        dest="adapter_features_dim",
+        type=int,
+        help=argparse.SUPPRESS,
+    )
+    p.add_argument(
+        "--adapter-backbone-hidden-dim", dest="adapter_backbone_hidden_dim", type=int, default=256
+    )
+    p.add_argument(
+        "--lora-backbone-hidden-dim",
+        dest="adapter_backbone_hidden_dim",
+        type=int,
+        help=argparse.SUPPRESS,
+    )
+    p.add_argument(
+        "--adapter-warmup-tasks",
+        dest="adapter_warmup_tasks",
         type=int,
         default=1,
         help="Número de tareas iniciales con entrenamiento completo antes de freeze.",
     )
     p.add_argument(
+        "--lora-warmup-tasks",
+        dest="adapter_warmup_tasks",
+        type=int,
+        help=argparse.SUPPRESS,
+    )
+    p.add_argument(
+        "--adapter-train-actor-heads-after-warmup",
+        dest="adapter_train_actor_heads_after_warmup",
+        action=argparse.BooleanOptionalAction,
+        default=True,
+        help="Tras warm-up, entrenar heads del actor además del adaptador activo.",
+    )
+    p.add_argument(
         "--lora-train-heads-after-warmup",
+        dest="adapter_train_actor_heads_after_warmup",
+        action=argparse.BooleanOptionalAction,
+        help=argparse.SUPPRESS,
+    )
+    p.add_argument(
+        "--adapter-train-full-critic-after-warmup",
+        dest="adapter_train_full_critic_after_warmup",
+        action=argparse.BooleanOptionalAction,
+        default=True,
+        help="Tras warm-up, entrenar crítico completo (recomendado para SAC).",
+    )
+    p.add_argument(
+        "--adapter-share-features-extractor",
+        dest="adapter_share_features_extractor",
         action=argparse.BooleanOptionalAction,
         default=False,
-        help="Tras warm-up, entrenar también heads actor/critic además del adaptador actual.",
+        help="No usar. En SAC se fuerza False para evitar gradientes ambiguos.",
     )
     p.add_argument(
         "--lora-share-features-extractor",
+        dest="adapter_share_features_extractor",
         action=argparse.BooleanOptionalAction,
-        default=False,
-        help="Solo SAC: compartir extractor actor/critic (por defecto no compartir).",
+        help=argparse.SUPPRESS,
     )
-    p.add_argument("--sac-learning-rate", type=float, default=3e-4)
+    p.add_argument("--sac-learning-rate", type=float, default=1e-4)
     p.add_argument("--sac-batch-size", type=int, default=256)
-    p.add_argument("--sac-gradient-steps", type=int, default=2)
+    p.add_argument("--sac-gradient-steps", type=int, default=1)
     p.add_argument("--sac-buffer-size", type=int, default=1_000_000)
     p.add_argument("--sac-learning-starts", type=int, default=10_000)
+    p.add_argument(
+        "--sac-random-steps-per-task",
+        type=int,
+        default=20_000,
+        help="Acciones aleatorias al inicio de cada tarea (protocolo CW en SAC).",
+    )
+    p.add_argument(
+        "--reset-optimizers-every-task",
+        action=argparse.BooleanOptionalAction,
+        default=True,
+        help="Reset de estados de optimizadores al cambiar de tarea.",
+    )
+    p.add_argument(
+        "--reset-ent-coef-every-task",
+        action=argparse.BooleanOptionalAction,
+        default=False,
+        help="En SAC: resetear log_ent_coef al cambiar de tarea.",
+    )
+    p.add_argument(
+        "--ent-coef-reset-log-value",
+        type=float,
+        default=0.0,
+        help="Valor de reinicio para log_ent_coef (alpha=exp(valor)).",
+    )
+    p.add_argument(
+        "--reset-metric-windows-every-task",
+        action=argparse.BooleanOptionalAction,
+        default=True,
+        help="Limpiar ventanas rolling de métricas al inicio de cada tarea.",
+    )
     p.add_argument("--health-freq", type=int, default=5_000)
     p.add_argument("--plot-freq", type=int, default=20_000)
     p.add_argument("--checkpoint-freq", type=int, default=50_000)
@@ -1251,14 +1629,26 @@ def build_parser() -> argparse.ArgumentParser:
 
 def main(argv: Optional[Sequence[str]] = None) -> int:
     args = build_parser().parse_args(argv)
-    if args.lora_enabled and not args.append_task_id:
-        raise ValueError("Con --lora-enabled debes activar --append-task-id para routing por tarea.")
-    if args.lora_rank <= 0:
-        raise ValueError("--lora-rank debe ser > 0.")
-    if args.lora_warmup_tasks <= 0:
-        raise ValueError("--lora-warmup-tasks debe ser >= 1.")
+    if isinstance(args.reward_func_version, str) and args.reward_func_version.strip().lower() in {
+        "",
+        "none",
+        "null",
+    }:
+        args.reward_func_version = None
+    if args.adapter_enabled and not args.append_task_id:
+        raise ValueError("Con --adapter-enabled debes activar --append-task-id para routing por tarea.")
+    if args.adapter_rank <= 0:
+        raise ValueError("--adapter-rank debe ser > 0.")
+    if args.adapter_warmup_tasks <= 0:
+        raise ValueError("--adapter-warmup-tasks debe ser >= 1.")
+    if args.adapter_share_features_extractor:
+        raise ValueError(
+            "--adapter-share-features-extractor no está soportado: en SAC se mantiene False."
+        )
     if args.sac_learning_starts < 0:
         raise ValueError("--sac-learning-starts no puede ser negativo.")
+    if args.sac_random_steps_per_task < 0:
+        raise ValueError("--sac-random-steps-per-task no puede ser negativo.")
     _set_seed(args.seed)
 
     tasks = resolve_task_sequence(args.task_preset, args.tasks)
