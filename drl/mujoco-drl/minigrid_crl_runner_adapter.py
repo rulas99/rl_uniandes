@@ -43,7 +43,14 @@ PREFERRED_MINIGRID_SMOKE4: List[str] = [
     "MiniGrid-Empty-5x5-v0",
     "MiniGrid-DoorKey-5x5-v0",
     "MiniGrid-FourRooms-v0",
-    "MiniGrid-Unlock-v0",
+    "MiniGrid-Unlock-v0"
+]
+
+PREFERRED_MINIGRID_SMOKE3: List[str] = [
+    "MiniGrid-DoorKey-9x9-v0",
+    "MiniGrid-SimpleCrossingS9N1-v0",
+    "MiniGrid-LavaCrossingS9N1-v0",
+    "MiniGrid-Unlock-v0"
 ]
 
 PREFERRED_MINIGRID_CW10: List[str] = [
