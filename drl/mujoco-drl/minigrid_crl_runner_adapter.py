@@ -18,40 +18,45 @@ import matplotlib
 import numpy as np
 import torch as th
 import torch.nn as nn
-import torch.nn.functional as F
 from gymnasium import spaces
-from stable_baselines3 import PPO, SAC
+from stable_baselines3 import PPO
 from stable_baselines3.common.base_class import BaseAlgorithm
 from stable_baselines3.common.callbacks import BaseCallback
 from stable_baselines3.common.monitor import Monitor
 from stable_baselines3.common.torch_layers import BaseFeaturesExtractor
-from stable_baselines3.common.utils import polyak_update
 
 matplotlib.use("Agg")
 import matplotlib.pyplot as plt  # noqa: E402
 
-# CW10 del paper Continual World (nombres v3 en Meta-World moderno).
-CW10_TASKS: List[str] = [
-    "hammer-v3",
-    "push-wall-v3",
-    "faucet-close-v3",
-    "push-back-v3",
-    "stick-pull-v3",
-    "handle-press-side-v3",
-    "push-v3",
-    "shelf-place-v3",
-    "window-close-v3",
-    "peg-unplug-side-v3",
+# Tags comunes para PPO en SB3.
+AUDIT_TB_TAGS: List[str] = [
+    "train/entropy_loss",
+    "train/policy_gradient_loss",
+    "train/value_loss",
+    "train/loss",
+    "train/approx_kl",
+    "train/clip_fraction",
+    "train/explained_variance",
 ]
 
-AUDIT_TB_TAGS: List[str] = [
-    "train/critic_loss",
-    "train/actor_loss",
-    "train/ent_coef",
-    "train/log_prob",
-    "train/qf1_mean",
-    "train/qf2_mean",
-    "train/std",
+PREFERRED_MINIGRID_SMOKE4: List[str] = [
+    "MiniGrid-Empty-5x5-v0",
+    "MiniGrid-DoorKey-5x5-v0",
+    "MiniGrid-FourRooms-v0",
+    "MiniGrid-Unlock-v0",
+]
+
+PREFERRED_MINIGRID_CW10: List[str] = [
+    "MiniGrid-Empty-5x5-v0",
+    "MiniGrid-DoorKey-5x5-v0",
+    "MiniGrid-Unlock-v0",
+    "MiniGrid-BlockedUnlockPickup-v0",
+    "MiniGrid-FourRooms-v0",
+    "MiniGrid-LavaGapS5-v0",
+    "MiniGrid-LavaCrossingS9N1-v0",
+    "MiniGrid-SimpleCrossingS9N1-v0",
+    "MiniGrid-MultiRoom-N2-S4-v0",
+    "MiniGrid-Dynamic-Obstacles-5x5-v0",
 ]
 
 
@@ -68,9 +73,8 @@ def _collect_runtime_versions() -> Dict[str, Any]:
     versions: Dict[str, Any] = {
         "python": platform.python_version(),
         "platform": platform.platform(),
-        "metaworld": _safe_package_version("metaworld"),
         "gymnasium": _safe_package_version("gymnasium"),
-        "mujoco": _safe_package_version("mujoco"),
+        "minigrid": _safe_package_version("minigrid"),
         "stable-baselines3": _safe_package_version("stable-baselines3"),
         "torch": _safe_package_version("torch"),
     }
@@ -89,24 +93,24 @@ def _write_runtime_versions(run_dir: Path, versions: Dict[str, Any]) -> Path:
     return out_path
 
 
-def _ensure_metaworld() -> None:
+def _ensure_minigrid() -> None:
     try:
-        import metaworld  # noqa: F401
+        import minigrid  # noqa: F401
     except ModuleNotFoundError as exc:
         raise RuntimeError(
-            "No se encontró `metaworld`.\n"
+            "No se encontró `minigrid`.\n"
             "Instala con:\n"
-            "  ./.venv/bin/python -m pip install metaworld"
+            "  ./.venv/bin/python -m pip install minigrid"
         ) from exc
 
 
-def _all_v3_tasks() -> List[str]:
-    _ensure_metaworld()
-    import metaworld
-
-    return sorted(
-        name for name in metaworld.ALL_V3_ENVIRONMENTS.keys() if name.endswith("-v3")
-    )
+def _registered_env_ids(prefix: str) -> List[str]:
+    ids: List[str] = []
+    for spec in gym.envs.registry.values():
+        env_id = getattr(spec, "id", None)
+        if isinstance(env_id, str) and env_id.startswith(prefix):
+            ids.append(env_id)
+    return sorted(ids)
 
 
 def _set_seed(seed: int) -> None:
@@ -125,7 +129,35 @@ def _parse_csv_tasks(tasks_csv: str) -> List[str]:
     return [x for x in vals if x]
 
 
-def resolve_task_sequence(task_preset: str, tasks_csv: Optional[str]) -> List[str]:
+def _fill_from_available(
+    preferred: Sequence[str],
+    available: Sequence[str],
+    required: int,
+) -> List[str]:
+    selected = [task for task in preferred if task in available]
+    if len(selected) < required:
+        extras = [task for task in available if task not in selected]
+        selected.extend(extras[: required - len(selected)])
+    if len(selected) < required:
+        raise RuntimeError(
+            f"No hay suficientes tareas registradas para construir preset de {required}. "
+            f"Disponibles={len(available)}"
+        )
+    return selected[:required]
+
+
+def resolve_task_sequence(
+    task_preset: str,
+    tasks_csv: Optional[str],
+) -> List[str]:
+    _ensure_minigrid()
+    available = _registered_env_ids(prefix="MiniGrid-")
+    if not available:
+        raise RuntimeError(
+            "No se encontraron entornos registrados con prefijo `MiniGrid-`. "
+            "Revisa instalación de minigrid."
+        )
+
     if tasks_csv:
         tasks = _parse_csv_tasks(tasks_csv)
         if not tasks:
@@ -133,121 +165,110 @@ def resolve_task_sequence(task_preset: str, tasks_csv: Optional[str]) -> List[st
         return tasks
 
     preset = task_preset.lower().strip()
-    if preset == "cw10":
-        return CW10_TASKS.copy()
-    if preset == "cw20":
-        return CW10_TASKS + CW10_TASKS
-    if preset == "mt10":
-        # MT10 clásico de Meta-World+ docs.
-        return [
-            "reach-v3",
-            "push-v3",
-            "pick-place-v3",
-            "door-open-v3",
-            "drawer-open-v3",
-            "drawer-close-v3",
-            "button-press-topdown-v3",
-            "peg-insert-side-v3",
-            "window-open-v3",
-            "window-close-v3",
-        ]
-    if preset == "mt50":
-        tasks = _all_v3_tasks()
-        if len(tasks) < 50:
-            raise RuntimeError(f"Solo se detectaron {len(tasks)} tareas v3.")
-        return tasks[:50]
+    if preset not in {"smoke4", "cw10", "cw20", "all"}:
+        raise ValueError(
+            "`--task-preset` inválido. Usa smoke4/cw10/cw20/all o define --tasks."
+        )
+    if preset == "all":
+        return list(available)
+
     if preset == "smoke4":
-        return ["push-v3","reach-v3","push-v3","pick-place-v3"]
+        target = min(4, len(available))
+        if target < 4:
+            print(
+                f"[WARN] Solo hay {len(available)} tareas registradas; "
+                "smoke4 se reducirá automáticamente."
+            )
+        return _fill_from_available(PREFERRED_MINIGRID_SMOKE4, available, target)
 
-    raise ValueError("`--task-preset` inválido. Usa cw10/cw20/mt10/mt50/smoke2.")
+    cw10_target = min(10, len(available))
+    if cw10_target < 10:
+        print(
+            f"[WARN] Solo hay {len(available)} tareas registradas; "
+            "cw10 se reducirá automáticamente."
+        )
+    cw10 = _fill_from_available(PREFERRED_MINIGRID_CW10, available, cw10_target)
+    if preset == "cw10":
+        return cw10
+    return cw10 + cw10
 
 
-class RelaxedObsBounds(gym.ObservationWrapper):
-    """Arregla casos de Meta-World donde low==high pero obs varía.
+class FlattenToFloatObs(gym.ObservationWrapper):
+    """Convierte observaciones Box a vector float32, opcionalmente normalizado."""
 
-    Gymnasium env_checker marca warning aunque la env sea válida en práctica.
-    """
-
-    def __init__(self, env: gym.Env):
+    def __init__(self, env: gym.Env, normalize: bool = True):
         super().__init__(env)
         obs_space = env.observation_space
         if not isinstance(obs_space, spaces.Box):
-            self.observation_space = obs_space
-            return
+            raise TypeError("FlattenToFloatObs requiere observation_space Box.")
+        self.source_shape: tuple[int, ...] = tuple(int(x) for x in obs_space.shape)
+        self.source_dtype: str = str(obs_space.dtype)
 
-        low = np.array(obs_space.low, copy=True)
-        high = np.array(obs_space.high, copy=True)
-        same = low == high
-        if np.any(same):
-            # Hacemos esos ejes no acotados para que contains(obs) sea consistente.
-            low = low.astype(np.float64, copy=False)
-            high = high.astype(np.float64, copy=False)
-            low[same] = -np.inf
-            high[same] = np.inf
-            self.observation_space = spaces.Box(low=low, high=high, dtype=obs_space.dtype)
-        else:
-            self.observation_space = obs_space
+        low = np.asarray(obs_space.low, dtype=np.float32).reshape(-1)
+        high = np.asarray(obs_space.high, dtype=np.float32).reshape(-1)
+        self._normalize = bool(normalize)
+        self._scale: Optional[float] = None
 
-    def observation(self, observation: Any) -> Any:
-        return np.asarray(observation, dtype=self.observation_space.dtype)
+        if self._normalize:
+            finite_high = np.isfinite(high)
+            if bool(np.any(finite_high)):
+                max_high = float(np.max(np.abs(high[finite_high])))
+                if max_high > 1.0:
+                    self._scale = max_high
+                    low = low / max_high
+                    high = high / max_high
+
+        self.observation_space = spaces.Box(
+            low=low,
+            high=high,
+            dtype=np.float32,
+        )
+
+    def observation(self, observation: Any) -> np.ndarray:
+        obs = np.asarray(observation, dtype=np.float32).reshape(-1)
+        if self._scale is not None:
+            obs = obs / self._scale
+        return obs
 
 
-def _make_mt1_env(
-    env_name: str,
+def _space_signature(space: spaces.Space) -> tuple[str, tuple[int, ...], Any]:
+    if isinstance(space, spaces.Box):
+        return ("Box", tuple(space.shape), str(space.dtype))
+    if isinstance(space, spaces.Discrete):
+        return ("Discrete", (int(space.n),), str(type(space.start)))
+    return (space.__class__.__name__, tuple(), "")
+
+
+def _make_minigrid_env(
+    env_id: str,
     seed: int,
     max_episode_steps: int,
     render_mode: Optional[str],
     disable_env_checker: bool,
-    relax_obs_bounds: bool,
-    reward_func_version: Optional[str],
-    terminate_on_success: bool,
+    obs_mode: str,
+    normalize_obs: bool,
 ) -> gym.Env:
-    _ensure_metaworld()
-    make_kwargs: Dict[str, Any] = dict(
-        env_name=env_name,
-        seed=seed,
+    _ensure_minigrid()
+    env = gym.make(
+        env_id,
         render_mode=render_mode,
         disable_env_checker=disable_env_checker,
-        terminate_on_success=terminate_on_success,
     )
-    env: gym.Env
-    if reward_func_version:
-        try:
-            env = gym.make(
-                "Meta-World/MT1",
-                reward_func_version=reward_func_version,
-                **make_kwargs,
-            )
-        except TypeError as exc:
-            if "reward_func_version" not in str(exc):
-                raise
-            try:
-                env = gym.make(
-                    "Meta-World/MT1",
-                    reward_function_version=reward_func_version,
-                    **make_kwargs,
-                )
-                print(
-                    "[WARN] MT1 wrapper usa reward_function_version (legacy); "
-                    "aplicando compatibilidad."
-                )
-            except TypeError as legacy_exc:
-                if "reward_function_version" not in str(legacy_exc):
-                    raise
-                print(
-                    "[WARN] MT1 wrapper no soporta reward_func_version "
-                    "ni reward_function_version; usando reward por defecto."
-                )
-                env = gym.make("Meta-World/MT1", **make_kwargs)
+
+    from minigrid.wrappers import FlatObsWrapper, ImgObsWrapper
+
+    if obs_mode == "flat":
+        env = FlatObsWrapper(env)
     else:
-        env = gym.make("Meta-World/MT1", **make_kwargs)
+        env = ImgObsWrapper(env)
     env = gym.wrappers.TimeLimit(env, max_episode_steps=max_episode_steps)
-    if relax_obs_bounds:
-        env = RelaxedObsBounds(env)
+    env = FlattenToFloatObs(env, normalize=normalize_obs)
+    env.action_space.seed(seed)
+    env.reset(seed=seed)
     return env
 
 
-class ContinualTaskSuiteEnv(gym.Env[np.ndarray, np.ndarray]):
+class ContinualTaskSuiteEnv(gym.Env[np.ndarray, int]):
     """Env multi-tarea donde cada episodio usa una tarea activa."""
 
     metadata = {"render_modes": ["human", "rgb_array"]}
@@ -260,9 +281,8 @@ class ContinualTaskSuiteEnv(gym.Env[np.ndarray, np.ndarray]):
         append_task_id: bool = False,
         render_mode: Optional[str] = None,
         disable_env_checker: bool = True,
-        relax_obs_bounds: bool = True,
-        reward_func_version: Optional[str] = "v2",
-        terminate_on_success: bool = True,
+        obs_mode: str = "image",
+        normalize_obs: bool = True,
     ):
         super().__init__()
         if not task_names:
@@ -278,33 +298,50 @@ class ContinualTaskSuiteEnv(gym.Env[np.ndarray, np.ndarray]):
 
         self._envs: Dict[str, gym.Env] = {}
         for i, task in enumerate(self.unique_tasks):
-            self._envs[task] = _make_mt1_env(
-                env_name=task,
+            self._envs[task] = _make_minigrid_env(
+                env_id=task,
                 seed=seed + i,
                 max_episode_steps=max_episode_steps,
                 render_mode=render_mode,
                 disable_env_checker=disable_env_checker,
-                relax_obs_bounds=relax_obs_bounds,
-                reward_func_version=reward_func_version,
-                terminate_on_success=terminate_on_success,
+                obs_mode=obs_mode,
+                normalize_obs=normalize_obs,
             )
 
         base_env = self._envs[self.unique_tasks[0]]
         self.action_space = base_env.action_space
         if not isinstance(base_env.observation_space, spaces.Box):
-            raise TypeError("Se esperaba observation_space Box.")
+            raise TypeError("Se esperaba observation_space Box tras wrappers.")
+        self.state_source_shape: Optional[tuple[int, ...]] = getattr(
+            base_env, "source_shape", None
+        )
+        self.state_source_dtype: Optional[str] = getattr(base_env, "source_dtype", None)
+
+        for task, env in self._envs.items():
+            if _space_signature(env.action_space) != _space_signature(self.action_space):
+                raise ValueError(
+                    "Todas las tareas deben compartir action_space. "
+                    f"Base={_space_signature(self.action_space)} "
+                    f"task={task} -> {_space_signature(env.action_space)}"
+                )
+            if _space_signature(env.observation_space) != _space_signature(
+                base_env.observation_space
+            ):
+                raise ValueError(
+                    "Todas las tareas deben compartir observation_space tras wrappers. "
+                    f"Base={_space_signature(base_env.observation_space)} "
+                    f"task={task} -> {_space_signature(env.observation_space)}"
+                )
 
         base_space = base_env.observation_space
-        low = np.array(base_space.low, dtype=np.float64, copy=True)
-        high = np.array(base_space.high, dtype=np.float64, copy=True)
+        low = np.array(base_space.low, dtype=np.float32, copy=True)
+        high = np.array(base_space.high, dtype=np.float32, copy=True)
         self._num_tasks = len(self.unique_tasks)
 
         if append_task_id:
-            low = np.concatenate([low, np.zeros(self._num_tasks, dtype=low.dtype)])
-            high = np.concatenate([high, np.ones(self._num_tasks, dtype=high.dtype)])
-            self.observation_space = spaces.Box(low=low, high=high, dtype=base_space.dtype)
-        else:
-            self.observation_space = spaces.Box(low=low, high=high, dtype=base_space.dtype)
+            low = np.concatenate([low, np.zeros(self._num_tasks, dtype=np.float32)])
+            high = np.concatenate([high, np.ones(self._num_tasks, dtype=np.float32)])
+        self.observation_space = spaces.Box(low=low, high=high, dtype=np.float32)
 
     def set_task(self, task_name: Optional[str]) -> None:
         if task_name is None:
@@ -318,28 +355,41 @@ class ContinualTaskSuiteEnv(gym.Env[np.ndarray, np.ndarray]):
         return self.unique_tasks.index(task)
 
     def _task_one_hot(self, task: str) -> np.ndarray:
-        one_hot = np.zeros(self._num_tasks, dtype=self.observation_space.dtype)
+        one_hot = np.zeros(self._num_tasks, dtype=np.float32)
         one_hot[self._task_idx(task)] = 1.0
         return one_hot
 
     def _augment_obs(self, obs: np.ndarray, task: str) -> np.ndarray:
-        obs = np.asarray(obs, dtype=self.observation_space.dtype)
+        out = np.asarray(obs, dtype=np.float32)
         if not self.append_task_id:
-            return obs
-        return np.concatenate([obs, self._task_one_hot(task)], axis=0).astype(
-            self.observation_space.dtype
-        )
+            return out
+        return np.concatenate([out, self._task_one_hot(task)], axis=0).astype(np.float32)
 
     @staticmethod
-    def _augment_info(info: Dict[str, Any], task: str, task_idx: int) -> Dict[str, Any]:
+    def _safe_success_value(value: Any) -> float:
+        try:
+            return float(value)
+        except Exception:
+            return 0.0
+
+    @classmethod
+    def _augment_info(
+        cls,
+        info: Dict[str, Any],
+        task: str,
+        task_idx: int,
+        reward: Optional[float] = None,
+        terminated: Optional[bool] = None,
+    ) -> Dict[str, Any]:
         out = dict(info)
         out["task_name"] = task
         out["task_idx"] = task_idx
-        success = out.get("success", out.get("is_success", 0.0))
-        try:
-            out["is_success"] = float(success)
-        except Exception:
-            out["is_success"] = 0.0
+
+        success = out.get("is_success", out.get("success", None))
+        if success is None and terminated is not None and reward is not None:
+            # MiniGrid normalmente usa reward>0 al resolver la tarea.
+            success = 1.0 if (bool(terminated) and float(reward) > 0.0) else 0.0
+        out["is_success"] = cls._safe_success_value(success)
         return out
 
     def reset(
@@ -360,30 +410,39 @@ class ContinualTaskSuiteEnv(gym.Env[np.ndarray, np.ndarray]):
 
         child_options = dict(options)
         child_options.pop("task_name", None)
+
         obs, info = self._envs[task].reset(seed=seed, options=child_options or None)
         self._current_task = task
         self._ep_success = 0.0
         idx = self._task_idx(task)
-        out_info = self._augment_info(info, task, idx)
+        out_info = self._augment_info(info, task, idx, reward=None, terminated=None)
         out_info["is_success"] = self._ep_success
-        return self._augment_obs(obs, task), out_info
+        return self._augment_obs(np.asarray(obs), task), out_info
 
     def step(
-        self, action: np.ndarray
+        self, action: int
     ) -> tuple[np.ndarray, float, bool, bool, Dict[str, Any]]:
         if self._current_task is None:
             raise RuntimeError("Se llamó step() antes de reset().")
         env = self._envs[self._current_task]
         obs, reward, terminated, truncated, info = env.step(action)
         idx = self._task_idx(self._current_task)
-        out_info = self._augment_info(info, self._current_task, idx)
-        try:
-            self._ep_success = max(self._ep_success, float(out_info.get("is_success", 0.0)))
-        except Exception:
-            pass
+        out_info = self._augment_info(
+            info,
+            self._current_task,
+            idx,
+            reward=float(reward),
+            terminated=bool(terminated),
+        )
+
+        self._ep_success = max(
+            self._ep_success,
+            self._safe_success_value(out_info.get("is_success", 0.0)),
+        )
         out_info["is_success"] = float(self._ep_success)
+
         return (
-            self._augment_obs(obs, self._current_task),
+            self._augment_obs(np.asarray(obs), self._current_task),
             float(reward),
             bool(terminated),
             bool(truncated),
@@ -420,12 +479,7 @@ class LowRankAdapter(nn.Module):
 
 
 class MultiHeadLinear(nn.Module):
-    """Multiple linear heads indexed by task. One active at a time.
-
-    Drop-in replacement for nn.Linear in the actor output layers.
-    During continual learning each task gets its own head, so switching
-    tasks does not overwrite previous task heads.
-    """
+    """Multiple linear heads indexed by task. One active at a time."""
 
     def __init__(self, in_features: int, out_features: int, num_heads: int):
         super().__init__()
@@ -454,8 +508,67 @@ class MultiHeadLinear(nn.Module):
         )
 
 
+def _apply_task_adapters(
+    h: th.Tensor,
+    one_hot: th.Tensor,
+    adapters: nn.ModuleList,
+) -> th.Tensor:
+    """Rutea y aplica adaptadores por tarea usando one-hot."""
+    task_indices = th.argmax(one_hot, dim=-1)
+    flat_task_indices = task_indices.reshape(-1)
+    if flat_task_indices.numel() == 0:
+        return h
+
+    if bool(th.all(flat_task_indices == flat_task_indices[0]).item()):
+        idx = int(flat_task_indices[0].item())
+        return h + adapters[idx](h)
+
+    flat_h = h.reshape(-1, h.shape[-1])
+    flat_delta = th.zeros_like(flat_h)
+    for idx, adapter in enumerate(adapters):
+        mask = flat_task_indices == idx
+        if not bool(mask.any().item()):
+            continue
+        flat_delta[mask] = adapter(flat_h[mask])
+    return h + flat_delta.view_as(h)
+
+
+def _infer_image_shape(
+    state_dim: int,
+    image_shape: Optional[Sequence[int]],
+    image_channels: int,
+) -> tuple[int, int, int]:
+    if image_shape is not None:
+        if len(image_shape) != 3:
+            raise ValueError(f"image_shape debe tener 3 dimensiones, recibido={image_shape}.")
+        h, w, c = (int(image_shape[0]), int(image_shape[1]), int(image_shape[2]))
+        if h <= 0 or w <= 0 or c <= 0:
+            raise ValueError(f"image_shape inválido: {image_shape}")
+        if h * w * c != state_dim:
+            raise ValueError(
+                f"image_shape={image_shape} incompatible con state_dim={state_dim}."
+            )
+        return h, w, c
+
+    if image_channels <= 0:
+        raise ValueError(f"image_channels debe ser > 0, recibido={image_channels}.")
+    if state_dim % image_channels != 0:
+        raise ValueError(
+            "No se pudo inferir forma de imagen: state_dim no divisible por image_channels "
+            f"({state_dim} % {image_channels} != 0)."
+        )
+    spatial = state_dim // image_channels
+    side = int(round(math.sqrt(spatial)))
+    if side * side != spatial:
+        raise ValueError(
+            "No se pudo inferir imagen cuadrada desde observation_space. "
+            f"state_dim={state_dim}, image_channels={image_channels}"
+        )
+    return side, side, image_channels
+
+
 class RoutedAdapterBackboneExtractor(BaseFeaturesExtractor):
-    """Backbone compartido + un adaptador por tarea ruteado con one-hot."""
+    """Backbone MLP compartido + adaptadores por tarea."""
 
     def __init__(
         self,
@@ -510,31 +623,99 @@ class RoutedAdapterBackboneExtractor(BaseFeaturesExtractor):
     def forward(self, obs: th.Tensor) -> th.Tensor:
         state = obs[..., : self.state_dim]
         one_hot = obs[..., self.state_dim : self.state_dim + self.num_tasks]
-
         h = self.backbone(state)
-        task_indices = th.argmax(one_hot, dim=-1)
-        flat_task_indices = task_indices.reshape(-1)
-        if flat_task_indices.numel() == 0:
-            return h
+        return _apply_task_adapters(h, one_hot, self.adapters)
 
-        # Camino rápido: batch mono-tarea (entrenamiento continual estándar).
-        if bool(th.all(flat_task_indices == flat_task_indices[0]).item()):
-            idx = int(flat_task_indices[0].item())
-            return h + self.adapters[idx](h)
 
-        # Camino general: batch mixto de tareas (p.ej. evaluación multitarea).
-        flat_h = h.reshape(-1, h.shape[-1])
-        flat_delta = th.zeros_like(flat_h)
-        for idx, adapter in enumerate(self.adapters):
-            mask = flat_task_indices == idx
-            if not bool(mask.any().item()):
-                continue
-            flat_delta[mask] = adapter(flat_h[mask])
-        return h + flat_delta.view_as(h)
+class RoutedAdapterCNNExtractor(BaseFeaturesExtractor):
+    """Backbone CNN compartido + adaptadores por tarea para observaciones visuales."""
+
+    def __init__(
+        self,
+        observation_space: spaces.Box,
+        features_dim: int = 256,
+        num_tasks: int = 2,
+        adapter_rank: int = 16,
+        adapter_alpha: float = 16.0,
+        image_shape: Optional[Sequence[int]] = None,
+        image_channels: int = 3,
+    ):
+        if not isinstance(observation_space, spaces.Box):
+            raise TypeError("RoutedAdapterCNNExtractor requiere observation_space Box.")
+        if num_tasks <= 0:
+            raise ValueError(f"num_tasks debe ser > 0, recibido={num_tasks}.")
+
+        super().__init__(observation_space, features_dim)
+
+        obs_dim = int(np.prod(observation_space.shape))
+        if obs_dim <= num_tasks:
+            raise ValueError(
+                "obs_dim debe ser mayor a num_tasks. "
+                "Activa --append-task-id y valida el número de tareas."
+            )
+
+        self.num_tasks = int(num_tasks)
+        self.state_dim = obs_dim - self.num_tasks
+        self._features_dim = int(features_dim)
+
+        height, width, channels = _infer_image_shape(
+            state_dim=self.state_dim,
+            image_shape=image_shape,
+            image_channels=image_channels,
+        )
+        self.height = int(height)
+        self.width = int(width)
+        self.channels = int(channels)
+
+        self.cnn = nn.Sequential(
+            nn.Conv2d(self.channels, 32, kernel_size=3, stride=1, padding=1),
+            nn.ReLU(),
+            nn.Conv2d(32, 64, kernel_size=3, stride=1, padding=1),
+            nn.ReLU(),
+            nn.Conv2d(64, 64, kernel_size=3, stride=1, padding=1),
+            nn.ReLU(),
+            nn.Flatten(),
+        )
+        with th.no_grad():
+            dummy = th.zeros(1, self.channels, self.height, self.width)
+            n_flatten = int(self.cnn(dummy).shape[1])
+
+        self.linear = nn.Sequential(
+            nn.Linear(n_flatten, features_dim),
+            nn.ReLU(),
+        )
+        self.adapters = nn.ModuleList(
+            [
+                LowRankAdapter(features_dim, rank=adapter_rank, alpha=adapter_alpha)
+                for _ in range(self.num_tasks)
+            ]
+        )
+
+    def freeze_all(self) -> None:
+        for p in self.parameters():
+            p.requires_grad = False
+
+    def unfreeze_adapter(self, task_idx: int) -> None:
+        if not (0 <= task_idx < self.num_tasks):
+            raise ValueError(f"task_idx fuera de rango: {task_idx}")
+        for p in self.adapters[task_idx].parameters():
+            p.requires_grad = True
+
+    def forward(self, obs: th.Tensor) -> th.Tensor:
+        state_flat = obs[..., : self.state_dim]
+        one_hot = obs[..., self.state_dim : self.state_dim + self.num_tasks]
+
+        batch_shape = tuple(state_flat.shape[:-1])
+        flat_state = state_flat.reshape(-1, self.state_dim)
+        images = flat_state.reshape(-1, self.height, self.width, self.channels).permute(0, 3, 1, 2)
+
+        h = self.linear(self.cnn(images))
+        h = h.reshape(*batch_shape, self._features_dim)
+        return _apply_task_adapters(h, one_hot, self.adapters)
 
 
 class BackboneOnlyExtractor(BaseFeaturesExtractor):
-    """Mismo backbone base sin adaptadores (baseline de capacidad equivalente)."""
+    """Backbone MLP sin adaptadores."""
 
     def __init__(
         self,
@@ -568,7 +749,64 @@ class BackboneOnlyExtractor(BaseFeaturesExtractor):
         return self.backbone(state)
 
 
-def _iter_routed_extractors(policy: Any) -> List[RoutedAdapterBackboneExtractor]:
+class BackboneOnlyCNNExtractor(BaseFeaturesExtractor):
+    """Backbone CNN sin adaptadores para observaciones visuales."""
+
+    def __init__(
+        self,
+        observation_space: spaces.Box,
+        features_dim: int = 256,
+        num_tasks: int = 0,
+        image_shape: Optional[Sequence[int]] = None,
+        image_channels: int = 3,
+    ):
+        if not isinstance(observation_space, spaces.Box):
+            raise TypeError("BackboneOnlyCNNExtractor requiere observation_space Box.")
+        super().__init__(observation_space, features_dim)
+
+        obs_dim = int(np.prod(observation_space.shape))
+        self.num_tasks = max(0, int(num_tasks))
+        if self.num_tasks > 0 and obs_dim <= self.num_tasks:
+            raise ValueError("obs_dim debe ser mayor a num_tasks.")
+        self.state_dim = obs_dim - self.num_tasks if self.num_tasks > 0 else obs_dim
+        self._features_dim = int(features_dim)
+
+        height, width, channels = _infer_image_shape(
+            state_dim=self.state_dim,
+            image_shape=image_shape,
+            image_channels=image_channels,
+        )
+        self.height = int(height)
+        self.width = int(width)
+        self.channels = int(channels)
+
+        self.cnn = nn.Sequential(
+            nn.Conv2d(self.channels, 32, kernel_size=3, stride=1, padding=1),
+            nn.ReLU(),
+            nn.Conv2d(32, 64, kernel_size=3, stride=1, padding=1),
+            nn.ReLU(),
+            nn.Conv2d(64, 64, kernel_size=3, stride=1, padding=1),
+            nn.ReLU(),
+            nn.Flatten(),
+        )
+        with th.no_grad():
+            dummy = th.zeros(1, self.channels, self.height, self.width)
+            n_flatten = int(self.cnn(dummy).shape[1])
+        self.linear = nn.Sequential(
+            nn.Linear(n_flatten, features_dim),
+            nn.ReLU(),
+        )
+
+    def forward(self, obs: th.Tensor) -> th.Tensor:
+        state_flat = obs[..., : self.state_dim]
+        flat_state = state_flat.reshape(-1, self.state_dim)
+        images = flat_state.reshape(-1, self.height, self.width, self.channels).permute(0, 3, 1, 2)
+        h = self.linear(self.cnn(images))
+        out_shape = tuple(state_flat.shape[:-1]) + (self._features_dim,)
+        return h.reshape(out_shape)
+
+
+def _iter_routed_extractors(policy: Any) -> List[nn.Module]:
     candidates = [getattr(policy, "features_extractor", None)]
 
     actor = getattr(policy, "actor", None)
@@ -579,10 +817,13 @@ def _iter_routed_extractors(policy: Any) -> List[RoutedAdapterBackboneExtractor]
     if critic is not None:
         candidates.append(getattr(critic, "features_extractor", None))
 
-    extractors: List[RoutedAdapterBackboneExtractor] = []
+    extractors: List[nn.Module] = []
     seen: set[int] = set()
     for maybe_extractor in candidates:
-        if not isinstance(maybe_extractor, RoutedAdapterBackboneExtractor):
+        if not isinstance(
+            maybe_extractor,
+            (RoutedAdapterBackboneExtractor, RoutedAdapterCNNExtractor),
+        ):
             continue
         ptr = id(maybe_extractor)
         if ptr in seen:
@@ -604,10 +845,6 @@ def _adapter_task_idx_from_param_name(name: str) -> Optional[int]:
 
 
 def _multi_head_idx_from_param_name(name: str) -> Optional[int]:
-    """Return the head index if *name* belongs to a MultiHeadLinear, else None.
-
-    Parameter names look like ``actor.mu.heads.1.weight``.
-    """
     parts = name.split(".")
     for i, part in enumerate(parts[:-1]):
         if part != "heads":
@@ -618,46 +855,68 @@ def _multi_head_idx_from_param_name(name: str) -> Optional[int]:
     return None
 
 
+def _clone_optimizer(
+    optimizer: th.optim.Optimizer,
+    params: Iterable[th.nn.Parameter],
+) -> th.optim.Optimizer:
+    cls = optimizer.__class__
+    kwargs = dict(optimizer.defaults)
+    if optimizer.param_groups:
+        kwargs["lr"] = float(optimizer.param_groups[0].get("lr", kwargs.get("lr", 0.0)))
+    return cls(params, **kwargs)
+
+
 def _install_multi_heads(model: BaseAlgorithm, num_tasks: int) -> None:
-    """Replace actor.mu and actor.log_std with MultiHeadLinear.
+    """Instala heads por tarea para la salida de política cuando sea lineal."""
+    policy = model.policy
+    device = next(policy.parameters()).device
 
-    Head 0 inherits the weights from the original single linear layer
-    (created by SB3).  Remaining heads are freshly initialized.
-    Must be called **before** the first ``model.learn()``.
-    """
-    actor = getattr(model.policy, "actor", None)
-    if actor is None:
-        return
+    replaced: List[str] = []
 
-    device = next(model.policy.parameters()).device
-
-    for attr_name in ("mu", "log_std"):
-        orig: nn.Linear = getattr(actor, attr_name, None)
-        if orig is None or not isinstance(orig, nn.Linear):
-            continue
-        multi = MultiHeadLinear(orig.in_features, orig.out_features, num_tasks)
-        # Copy original weights into head 0.
+    action_net = getattr(policy, "action_net", None)
+    if isinstance(action_net, nn.Linear):
+        multi = MultiHeadLinear(action_net.in_features, action_net.out_features, num_tasks)
         with th.no_grad():
-            multi.heads[0].weight.copy_(orig.weight)
-            multi.heads[0].bias.copy_(orig.bias)
-        setattr(actor, attr_name, multi.to(device))
+            multi.heads[0].weight.copy_(action_net.weight)
+            multi.heads[0].bias.copy_(action_net.bias)
+        policy.action_net = multi.to(device)
+        replaced.append("policy.action_net")
 
-    # Re-create actor optimizer so it references the new parameters.
-    actor_opt = getattr(actor, "optimizer", None)
-    if actor_opt is not None:
-        actor.optimizer = _clone_optimizer(actor_opt, actor.parameters())
+    value_net = getattr(policy, "value_net", None)
+    if isinstance(value_net, nn.Linear):
+        multi = MultiHeadLinear(value_net.in_features, value_net.out_features, num_tasks)
+        with th.no_grad():
+            multi.heads[0].weight.copy_(value_net.weight)
+            multi.heads[0].bias.copy_(value_net.bias)
+        policy.value_net = multi.to(device)
+        replaced.append("policy.value_net")
 
-    total = sum(p.numel() for p in actor.mu.parameters()) + sum(
-        p.numel() for p in actor.log_std.parameters()
-    )
-    print(
-        f"[MULTI-HEAD] Installed {num_tasks} heads for actor.mu & actor.log_std "
-        f"({total:,} params total)"
-    )
+    actor = getattr(policy, "actor", None)
+    if actor is not None:
+        for attr_name in ("mu", "log_std"):
+            orig = getattr(actor, attr_name, None)
+            if orig is None or not isinstance(orig, nn.Linear):
+                continue
+            multi = MultiHeadLinear(orig.in_features, orig.out_features, num_tasks)
+            with th.no_grad():
+                multi.heads[0].weight.copy_(orig.weight)
+                multi.heads[0].bias.copy_(orig.bias)
+            setattr(actor, attr_name, multi.to(device))
+            replaced.append(f"actor.{attr_name}")
+
+    if hasattr(policy, "optimizer") and getattr(policy, "optimizer") is not None:
+        policy.optimizer = _clone_optimizer(policy.optimizer, policy.parameters())
+
+    if actor is not None and getattr(actor, "optimizer", None) is not None:
+        actor.optimizer = _clone_optimizer(actor.optimizer, actor.parameters())
+
+    if replaced:
+        print(f"[MULTI-HEAD] Installed {num_tasks} heads on: {', '.join(replaced)}")
+    else:
+        print("[MULTI-HEAD] No se encontró salida lineal compatible para instalar heads.")
 
 
 def _set_active_heads(model: BaseAlgorithm, task_idx: int) -> None:
-    """Set the active head on every MultiHeadLinear in the policy."""
     for module in model.policy.modules():
         if isinstance(module, MultiHeadLinear):
             module.set_active_head(task_idx)
@@ -672,26 +931,31 @@ def _set_trainable_for_task(
     train_actor_heads_after_warmup: bool,
     train_full_critic_after_warmup: bool,
 ) -> str:
+    """Configure trainable params for a continual phase.
+
+    Warm-up: full shared network + active per-task heads.
+    Post warm-up (PEFT): active adapter + active per-task heads only, with
+    optional unfreezing of shared actor/value trunks.
+    """
     policy = model.policy
 
     if phase <= warmup_tasks:
         for name, p in policy.named_parameters():
-            if name.startswith("critic_target."):
-                p.requires_grad = False
-                continue
             adapter_idx = _adapter_task_idx_from_param_name(name)
             if adapter_idx is not None:
-                p.requires_grad = bool(train_active_adapter_in_warmup and adapter_idx == task_idx)
+                p.requires_grad = bool(
+                    train_active_adapter_in_warmup and adapter_idx == task_idx
+                )
                 continue
-            # Only train the active multi-head, freeze others.
             head_idx = _multi_head_idx_from_param_name(name)
             if head_idx is not None:
                 p.requires_grad = head_idx == task_idx
                 continue
             p.requires_grad = True
+
         if train_active_adapter_in_warmup:
-            return "warmup_backbone+active_adapter+active_head"
-        return "warmup_backbone+active_head"
+            return "warmup_full+active_adapter+active_heads"
+        return "warmup_full+active_heads"
 
     for p in policy.parameters():
         p.requires_grad = False
@@ -699,78 +963,46 @@ def _set_trainable_for_task(
     extractors = _iter_routed_extractors(policy)
     if not extractors:
         raise TypeError(
-            "No se detectó RoutedAdapterBackboneExtractor en la policy. "
+            "No se detectó extractor de adaptadores ruteados en la policy. "
             "Revisa --adapter-enabled y policy_kwargs."
         )
 
-    actor = getattr(policy, "actor", None)
-    actor_extractor = getattr(actor, "features_extractor", None)
-    if isinstance(actor_extractor, RoutedAdapterBackboneExtractor):
-        actor_extractor.unfreeze_adapter(task_idx)
-    else:
-        # Fallback genérico (PPO u otras policies sin actor separado).
-        for extractor in extractors:
-            extractor.unfreeze_adapter(task_idx)
+    for extractor in extractors:
+        extractor.unfreeze_adapter(task_idx)
 
-    mode_parts = ["actor_adapter"]
+    mode_parts = ["adapter"]
 
-    # Unfreeze mu / log_std — only the active head when using MultiHeadLinear.
-    for attr_name, label in (("mu", "actor_mu"), ("log_std", "actor_log_std")):
-        head_module = getattr(actor, attr_name, None) if actor is not None else None
-        if head_module is None:
-            continue
-        if isinstance(head_module, MultiHeadLinear):
-            for p in head_module.heads[task_idx].parameters():
+    for module in policy.modules():
+        if isinstance(module, MultiHeadLinear):
+            for p in module.heads[task_idx].parameters():
                 p.requires_grad = True
-        else:
-            for p in head_module.parameters():
-                p.requires_grad = True
-        mode_parts.append(label)
+    mode_parts.append("active_heads")
 
     if train_actor_heads_after_warmup:
-        if actor is not None:
-            for name, p in actor.named_parameters():
-                if "features_extractor." in name:
-                    continue
-                if name.startswith("mu.") or name.startswith("log_std."):
-                    continue
-                # Only unfreeze latent_pi if it is truly empty (Sequential()),
-                # otherwise unfreezing shared hidden layers causes forgetting.
-                if "latent_pi." in name:
-                    latent_pi = getattr(actor, "latent_pi", None)
-                    if latent_pi is not None and len(list(latent_pi.children())) > 0:
-                        continue
+        for name, p in policy.named_parameters():
+            if "features_extractor" in name:
+                continue
+            head_idx = _multi_head_idx_from_param_name(name)
+            if head_idx is not None:
+                p.requires_grad = head_idx == task_idx
+                continue
+            if name.startswith("mlp_extractor.policy_net"):
                 p.requires_grad = True
-        else:
-            for name, p in policy.named_parameters():
-                if name.startswith("critic_target."):
-                    continue
-                if "features_extractor." in name:
-                    continue
-                p.requires_grad = True
-        mode_parts.append("actor_heads_extra")
+        mode_parts.append("policy_trunk")
 
-    critic = getattr(policy, "critic", None)
-    if critic is not None:
-        if train_full_critic_after_warmup:
-            for p in critic.parameters():
+    if train_full_critic_after_warmup:
+        for name, p in policy.named_parameters():
+            if "features_extractor" in name:
+                continue
+            if name.startswith("mlp_extractor.value_net"):
                 p.requires_grad = True
-            mode_parts.append("critic_full")
-        else:
-            critic_extractor = getattr(critic, "features_extractor", None)
-            if isinstance(critic_extractor, RoutedAdapterBackboneExtractor):
-                critic_extractor.unfreeze_adapter(task_idx)
-                mode_parts.append("critic_adapter")
+        mode_parts.append("value_trunk")
 
     return "+".join(mode_parts)
 
 
 def _count_trainable_params(model: BaseAlgorithm) -> int:
-    return sum(
-        p.numel()
-        for name, p in model.policy.named_parameters()
-        if p.requires_grad and not name.startswith("critic_target.")
-    )
+    return sum(p.numel() for p in model.policy.parameters() if p.requires_grad)
 
 
 def _count_trainable_adapter_params(model: BaseAlgorithm) -> int:
@@ -782,58 +1014,7 @@ def _count_trainable_adapter_params(model: BaseAlgorithm) -> int:
     return trainable
 
 
-def _clone_optimizer(optimizer: th.optim.Optimizer, params: Iterable[th.nn.Parameter]) -> th.optim.Optimizer:
-    cls = optimizer.__class__
-    kwargs = dict(optimizer.defaults)
-    if optimizer.param_groups:
-        kwargs["lr"] = float(optimizer.param_groups[0].get("lr", kwargs.get("lr", 0.0)))
-    return cls(params, **kwargs)
-
-
-def _reset_sac_optimizers(
-    model: BaseAlgorithm,
-    reset_ent_coef: bool,
-    ent_coef_log_reset_value: float,
-) -> List[str]:
-    reset_names: List[str] = []
-    policy = model.policy
-
-    actor = getattr(policy, "actor", None)
-    actor_opt = getattr(actor, "optimizer", None)
-    if actor is not None and actor_opt is not None:
-        actor.optimizer = _clone_optimizer(actor_opt, actor.parameters())
-        reset_names.append("actor")
-
-    critic = getattr(policy, "critic", None)
-    critic_opt = getattr(critic, "optimizer", None)
-    if critic is not None and critic_opt is not None:
-        critic.optimizer = _clone_optimizer(critic_opt, critic.parameters())
-        reset_names.append("critic")
-
-    ent_opt = getattr(model, "ent_coef_optimizer", None)
-    log_ent_coef = getattr(model, "log_ent_coef", None)
-    if ent_opt is not None and log_ent_coef is not None:
-        if reset_ent_coef:
-            with th.no_grad():
-                log_ent_coef.fill_(float(ent_coef_log_reset_value))
-        model.ent_coef_optimizer = _clone_optimizer(ent_opt, [log_ent_coef])
-        if reset_ent_coef:
-            reset_names.append("ent_coef(reset)")
-        else:
-            reset_names.append("ent_coef(opt)")
-
-    return reset_names
-
-
-def _reset_optimizers_for_task(
-    model: BaseAlgorithm,
-    reset_ent_coef: bool,
-    ent_coef_log_reset_value: float,
-) -> List[str]:
-    # Protocolo CW relevante para SAC.
-    if isinstance(model, SAC):
-        return _reset_sac_optimizers(model, reset_ent_coef, ent_coef_log_reset_value)
-
+def _reset_optimizers_for_task(model: BaseAlgorithm) -> List[str]:
     reset_names: List[str] = []
     policy_opt = getattr(model.policy, "optimizer", None)
     if policy_opt is not None:
@@ -842,225 +1023,125 @@ def _reset_optimizers_for_task(
     return reset_names
 
 
-def _configure_sac_phase_random_warmup(
-    model: BaseAlgorithm, random_steps_per_task: int
-) -> Optional[int]:
-    if not isinstance(model, SAC):
-        return None
-    steps = max(0, int(random_steps_per_task))
-    model.learning_starts = int(model.num_timesteps + steps)
-    return int(model.learning_starts)
-
-
-class SACWithAuditMetrics(SAC):
-    """SAC con métricas extra para auditoría en TensorBoard."""
-
-    def train(self, gradient_steps: int, batch_size: int = 64) -> None:
-        # Basado en SB3 2.7.1 + tags extra: log_prob, qf1_mean, qf2_mean, std.
-        self.policy.set_training_mode(True)
-        optimizers = [self.actor.optimizer, self.critic.optimizer]
-        if self.ent_coef_optimizer is not None:
-            optimizers += [self.ent_coef_optimizer]
-        self._update_learning_rate(optimizers)
-
-        ent_coef_losses: List[float] = []
-        ent_coefs: List[float] = []
-        actor_losses: List[float] = []
-        critic_losses: List[float] = []
-        log_probs: List[float] = []
-        qf1_means: List[float] = []
-        qf2_means: List[float] = []
-        std_means: List[float] = []
-
-        for gradient_step in range(gradient_steps):
-            replay_data = self.replay_buffer.sample(batch_size, env=self._vec_normalize_env)  # type: ignore[union-attr]
-            discounts = replay_data.discounts if replay_data.discounts is not None else self.gamma
-
-            if self.use_sde:
-                self.actor.reset_noise()
-
-            actions_pi, log_prob = self.actor.action_log_prob(replay_data.observations)
-            log_prob = log_prob.reshape(-1, 1)
-            log_probs.append(float(log_prob.detach().mean().cpu().item()))
-
-            with th.no_grad():
-                _, log_std, _ = self.actor.get_action_dist_params(replay_data.observations)
-                std_means.append(float(th.exp(log_std).mean().cpu().item()))
-
-            ent_coef_loss = None
-            if self.ent_coef_optimizer is not None and self.log_ent_coef is not None:
-                ent_coef = th.exp(self.log_ent_coef.detach())
-                assert isinstance(self.target_entropy, float)
-                ent_coef_loss = -(self.log_ent_coef * (log_prob + self.target_entropy).detach()).mean()
-                ent_coef_losses.append(float(ent_coef_loss.detach().cpu().item()))
-            else:
-                ent_coef = self.ent_coef_tensor
-
-            ent_coefs.append(float(ent_coef.detach().cpu().item()))
-
-            if ent_coef_loss is not None and self.ent_coef_optimizer is not None:
-                self.ent_coef_optimizer.zero_grad()
-                ent_coef_loss.backward()
-                self.ent_coef_optimizer.step()
-
-            with th.no_grad():
-                next_actions, next_log_prob = self.actor.action_log_prob(replay_data.next_observations)
-                next_q_values = th.cat(self.critic_target(replay_data.next_observations, next_actions), dim=1)
-                next_q_values, _ = th.min(next_q_values, dim=1, keepdim=True)
-                next_q_values = next_q_values - ent_coef * next_log_prob.reshape(-1, 1)
-                target_q_values = replay_data.rewards + (1 - replay_data.dones) * discounts * next_q_values
-
-            current_q_values = self.critic(replay_data.observations, replay_data.actions)
-            if len(current_q_values) >= 1:
-                qf1_means.append(float(current_q_values[0].detach().mean().cpu().item()))
-            if len(current_q_values) >= 2:
-                qf2_means.append(float(current_q_values[1].detach().mean().cpu().item()))
-
-            critic_loss = 0.5 * sum(F.mse_loss(current_q, target_q_values) for current_q in current_q_values)
-            critic_losses.append(float(critic_loss.detach().cpu().item()))
-
-            self.critic.optimizer.zero_grad()
-            critic_loss.backward()
-            self.critic.optimizer.step()
-
-            q_values_pi = th.cat(self.critic(replay_data.observations, actions_pi), dim=1)
-            min_qf_pi, _ = th.min(q_values_pi, dim=1, keepdim=True)
-            actor_loss = (ent_coef * log_prob - min_qf_pi).mean()
-            actor_losses.append(float(actor_loss.detach().cpu().item()))
-
-            self.actor.optimizer.zero_grad()
-            actor_loss.backward()
-            self.actor.optimizer.step()
-
-            if gradient_step % self.target_update_interval == 0:
-                polyak_update(self.critic.parameters(), self.critic_target.parameters(), self.tau)
-                polyak_update(self.batch_norm_stats, self.batch_norm_stats_target, 1.0)
-
-        self._n_updates += gradient_steps
-
-        self.logger.record("train/n_updates", self._n_updates, exclude="tensorboard")
-        self.logger.record("train/ent_coef", float(np.mean(ent_coefs)))
-        self.logger.record("train/actor_loss", float(np.mean(actor_losses)))
-        self.logger.record("train/critic_loss", float(np.mean(critic_losses)))
-        self.logger.record("train/log_prob", float(np.mean(log_probs)))
-        if qf1_means:
-            self.logger.record("train/qf1_mean", float(np.mean(qf1_means)))
-        if qf2_means:
-            self.logger.record("train/qf2_mean", float(np.mean(qf2_means)))
-        if std_means:
-            self.logger.record("train/std", float(np.mean(std_means)))
-        if ent_coef_losses:
-            self.logger.record("train/ent_coef_loss", float(np.mean(ent_coef_losses)))
-
-
 def _build_model(
-    algo: str,
     env: gym.Env,
     seed: int,
     device: str,
     tensorboard_dir: Path,
+    obs_mode: str,
     adapter_enabled: bool,
     adapter_num_tasks: int,
     adapter_rank: int,
     adapter_alpha: float,
     adapter_features_dim: int,
     adapter_backbone_hidden_dim: int,
-    append_task_id: bool,
-    sac_learning_rate: float,
-    sac_batch_size: int,
-    sac_gradient_steps: int,
-    sac_buffer_size: int,
-    sac_learning_starts: int,
-    sac_target_entropy: str = "auto",
+    ppo_learning_rate: float,
+    ppo_n_steps: int,
+    ppo_batch_size: int,
+    ppo_n_epochs: int,
+    ppo_gamma: float,
+    ppo_gae_lambda: float,
+    ppo_clip_range: float,
+    ppo_ent_coef: float,
+    ppo_vf_coef: float,
+    ppo_max_grad_norm: float,
+    ppo_target_kl: Optional[float],
 ) -> BaseAlgorithm:
-    algo = algo.lower()
+    suite = _suite_env(env)
+    state_source_shape = getattr(suite, "state_source_shape", None)
+    use_cnn = bool(obs_mode == "image" and state_source_shape is not None and len(state_source_shape) == 3)
+    if obs_mode == "image" and not use_cnn:
+        print(
+            "[WARN] obs_mode=image pero no se detectó shape de imagen 3D; "
+            "usando extractor MLP."
+        )
+
+    num_tasks_in_obs = adapter_num_tasks if bool(getattr(suite, "append_task_id", False)) else 0
 
     if adapter_enabled:
-        policy_kwargs: Dict[str, Any] = dict(
-            # pi=[] asegura que el adaptador va directo a mu/log_std
-            # qf=[256, 256] le da la profundidad necesaria al Crítico tras concatenar (s, a)
-            net_arch=dict(pi=[], qf=[adapter_backbone_hidden_dim, adapter_backbone_hidden_dim]),
-            features_extractor_class=RoutedAdapterBackboneExtractor,
-            features_extractor_kwargs=dict(
+        extractor_class: type[BaseFeaturesExtractor]
+        extractor_kwargs: Dict[str, Any]
+        if use_cnn:
+            extractor_class = RoutedAdapterCNNExtractor
+            extractor_kwargs = dict(
+                features_dim=adapter_features_dim,
+                num_tasks=adapter_num_tasks,
+                adapter_rank=adapter_rank,
+                adapter_alpha=adapter_alpha,
+                image_shape=state_source_shape,
+                image_channels=int(state_source_shape[2]),
+            )
+        else:
+            extractor_class = RoutedAdapterBackboneExtractor
+            extractor_kwargs = dict(
                 features_dim=adapter_features_dim,
                 num_tasks=adapter_num_tasks,
                 adapter_rank=adapter_rank,
                 adapter_alpha=adapter_alpha,
                 backbone_hidden_dim=adapter_backbone_hidden_dim,
+            )
+        policy_kwargs: Dict[str, Any] = dict(
+            net_arch=dict(
+                pi=[adapter_backbone_hidden_dim],
+                vf=[adapter_backbone_hidden_dim],
             ),
+            features_extractor_class=extractor_class,
+            features_extractor_kwargs=extractor_kwargs,
         )
     else:
-        # Standard 2-layer MLP, no custom extractor.
-        policy_kwargs: Dict[str, Any] = dict(net_arch=[256, 256])
-
-    # Parsear target_entropy: "auto" o valor float.
-    parsed_target_entropy: Any
-    if isinstance(sac_target_entropy, str) and sac_target_entropy.strip().lower() == "auto":
-        parsed_target_entropy = "auto"
-    else:
-        try:
-            parsed_target_entropy = float(sac_target_entropy)
-        except (ValueError, TypeError):
-            parsed_target_entropy = "auto"
-
-    if isinstance(parsed_target_entropy, float):
-        action_space = getattr(env, "action_space", None)
-        action_dim = None
-        if isinstance(action_space, spaces.Box):
-            action_dim = int(np.prod(action_space.shape))
-        if action_dim is not None and parsed_target_entropy < -float(action_dim):
-            print(
-                "[WARN] --sac-target-entropy es más negativo que -|A| "
-                f"({parsed_target_entropy:.2f} < {-action_dim}). "
-                "En SB3/SAC esto suele reducir alpha y exploración."
+        if use_cnn:
+            policy_kwargs = dict(
+                net_arch=dict(
+                    pi=[adapter_backbone_hidden_dim],
+                    vf=[adapter_backbone_hidden_dim],
+                ),
+                features_extractor_class=BackboneOnlyCNNExtractor,
+                features_extractor_kwargs=dict(
+                    features_dim=adapter_features_dim,
+                    num_tasks=num_tasks_in_obs,
+                    image_shape=state_source_shape,
+                    image_channels=int(state_source_shape[2]),
+                ),
+            )
+        else:
+            policy_kwargs = dict(
+                net_arch=dict(pi=[256, 256], vf=[256, 256]),
+                features_extractor_class=BackboneOnlyExtractor,
+                features_extractor_kwargs=dict(
+                    features_dim=adapter_features_dim,
+                    num_tasks=num_tasks_in_obs,
+                    backbone_hidden_dim=adapter_backbone_hidden_dim,
+                ),
             )
 
-    if algo == "sac":
-        if adapter_enabled:
-            # En SAC/SB3 mantenemos extractores separados: evita gradientes ambiguos.
-            policy_kwargs["share_features_extractor"] = False
-        return SACWithAuditMetrics(
-            "MlpPolicy",
-            env,
-            verbose=0,
-            seed=seed,
-            tensorboard_log=str(tensorboard_dir),
-            device=device,
-            learning_rate=sac_learning_rate,
-            batch_size=sac_batch_size,
-            gamma=0.99,
-            tau=0.005,
-            train_freq=1,
-            gradient_steps=sac_gradient_steps,
-            buffer_size=sac_buffer_size,
-            learning_starts=sac_learning_starts,
-            ent_coef="auto",
-            target_entropy=parsed_target_entropy,
-            policy_kwargs=policy_kwargs,
-        )
-    if algo == "ppo":
-        return PPO(
-            "MlpPolicy",
-            env,
-            verbose=0,
-            seed=seed,
-            tensorboard_log=str(tensorboard_dir),
-            device=device,
-            learning_rate=3e-4,
-            n_steps=2048,
-            batch_size=64,
-            n_epochs=10,
-            gamma=0.99,
-            gae_lambda=0.95,
-            clip_range=0.2,
-            ent_coef=0.0,
-            policy_kwargs=policy_kwargs,
-        )
-    raise ValueError(f"Algoritmo no soportado: {algo}")
+    return PPO(
+        "MlpPolicy",
+        env,
+        verbose=1,
+        seed=seed,
+        tensorboard_log=str(tensorboard_dir),
+        device=device,
+        learning_rate=ppo_learning_rate,
+        n_steps=ppo_n_steps,
+        batch_size=ppo_batch_size,
+        n_epochs=ppo_n_epochs,
+        gamma=ppo_gamma,
+        gae_lambda=ppo_gae_lambda,
+        clip_range=ppo_clip_range,
+        ent_coef=ppo_ent_coef,
+        vf_coef=ppo_vf_coef,
+        max_grad_norm=ppo_max_grad_norm,
+        target_kl=ppo_target_kl,
+        policy_kwargs=policy_kwargs,
+    )
 
 
 def evaluate_task(
-    model: BaseAlgorithm, env: gym.Env, task_name: str, episodes: int
+    model: BaseAlgorithm,
+    env: gym.Env,
+    task_name: str,
+    episodes: int,
+    deterministic: bool,
 ) -> Dict[str, float]:
     returns: List[float] = []
     successes: List[float] = []
@@ -1073,17 +1154,18 @@ def evaluate_task(
         ep_len = 0
         ep_success = 0.0
         while not done:
-            action, _ = model.predict(obs, deterministic=True)
+            action, _ = model.predict(obs, deterministic=deterministic)
             obs, reward, terminated, truncated, info = env.step(action)
             done = bool(terminated or truncated)
             ep_ret += float(reward)
             ep_len += 1
             step_success = info.get("is_success", info.get("success", 0.0))
             try:
-                if float(step_success) > 0.5:
-                    ep_success = 1.0
+                ep_success = max(ep_success, float(step_success))
             except Exception:
                 pass
+            if done and ep_success <= 0.0 and float(reward) > 0.0 and bool(terminated):
+                ep_success = 1.0
         returns.append(ep_ret)
         successes.append(ep_success)
         lengths.append(ep_len)
@@ -1119,9 +1201,7 @@ class HealthPlotCheckpointCallback(BaseCallback):
         save_best_checkpoints: bool = True,
         improvement_metric: str = "success",
         min_improvement_delta: float = 1e-6,
-        alpha_min: float = 0.0,
-        alpha_max: float = 1.0,
-        action_component_idx: int = 3,
+        action_component_idx: int = 0,
         action_window_size: int = 50_000,
         action_hist_bins: int = 31,
         verbose: int = 1,
@@ -1135,13 +1215,12 @@ class HealthPlotCheckpointCallback(BaseCallback):
         self.save_best_checkpoints = bool(save_best_checkpoints)
         self.improvement_metric = improvement_metric
         self.min_improvement_delta = float(min_improvement_delta)
-        self.alpha_min = float(alpha_min)
-        self.alpha_max = float(alpha_max)
         self.action_component_idx = int(action_component_idx)
         self.action_window_size = max(1, int(action_window_size))
         self.action_hist_bins = max(3, int(action_hist_bins))
-        self.action_mean_key = f"action_{self.action_component_idx + 1}_mean"
-        self.action_std_key = f"action_{self.action_component_idx + 1}_std"
+
+        self.action_mean_key = "action_mean"
+        self.action_std_key = "action_std"
 
         self.csv_path = self.run_dir / "train_metrics.csv"
         self.plot_dir = self.run_dir / "plots"
@@ -1162,7 +1241,7 @@ class HealthPlotCheckpointCallback(BaseCallback):
 
         self._successes: List[float] = []
         self._running_ep_success: Dict[int, float] = {}
-        self._action_component_values: deque[float] = deque(maxlen=self.action_window_size)
+        self._action_values: deque[float] = deque(maxlen=self.action_window_size)
         self.best_score = -float("inf")
         self.t0 = time.time()
 
@@ -1200,25 +1279,7 @@ class HealthPlotCheckpointCallback(BaseCallback):
             return "?"
 
     def _read_alpha(self) -> float:
-        # Compatible con distintas variantes de SB3 SAC.
-        try:
-            import torch as th
-
-            log_ent_coef = getattr(self.model, "log_ent_coef", None)
-            if log_ent_coef is not None:
-                if isinstance(log_ent_coef, th.Tensor):
-                    return float(th.exp(log_ent_coef.detach()).mean().cpu().item())
-                return float(np.exp(float(log_ent_coef)))
-            ent_coef_tensor = getattr(self.model, "ent_coef_tensor", None)
-            if ent_coef_tensor is not None:
-                if isinstance(ent_coef_tensor, th.Tensor):
-                    return float(ent_coef_tensor.detach().mean().cpu().item())
-                return float(ent_coef_tensor)
-            ent_coef = getattr(self.model, "ent_coef", None)
-            if isinstance(ent_coef, (int, float)):
-                return float(ent_coef)
-        except Exception:
-            pass
+        # PPO no usa alpha de SAC; devolvemos NaN.
         return float("nan")
 
     def _collect_episode_stats(self) -> Dict[str, float]:
@@ -1248,40 +1309,58 @@ class HealthPlotCheckpointCallback(BaseCallback):
             )
             writer.writerow(row)
 
-    def _update_action_component_buffer(self) -> None:
+    def _update_action_buffer(self) -> None:
         actions = self.locals.get("actions")
         if actions is None:
             return
-        arr = np.asarray(actions, dtype=np.float64)
+        arr = np.asarray(actions)
         if arr.size == 0:
             return
-        arr = np.atleast_2d(arr)
-        if arr.shape[-1] <= self.action_component_idx:
-            return
-        values = arr[..., self.action_component_idx].reshape(-1)
+
+        if arr.ndim == 0:
+            values = np.asarray([arr.item()], dtype=np.float64)
+        elif arr.ndim == 1:
+            values = arr.astype(np.float64).reshape(-1)
+        elif arr.shape[-1] > self.action_component_idx:
+            values = arr[..., self.action_component_idx].astype(np.float64).reshape(-1)
+        else:
+            values = arr.astype(np.float64).reshape(-1)
+
         for value in values:
             if np.isfinite(value):
-                self._action_component_values.append(float(value))
+                self._action_values.append(float(value))
 
-    def _action_component_stats(self) -> tuple[float, float]:
-        if not self._action_component_values:
+    def _action_stats(self) -> tuple[float, float]:
+        if not self._action_values:
             return float("nan"), float("nan")
-        arr = np.asarray(self._action_component_values, dtype=np.float64)
+        arr = np.asarray(self._action_values, dtype=np.float64)
         return float(np.mean(arr)), float(np.std(arr))
 
-    def _plot_action_component_hist(self) -> None:
-        if not self._action_component_values:
+    def _plot_action_hist(self) -> None:
+        if not self._action_values:
             return
-        values = np.asarray(self._action_component_values, dtype=np.float64)
+        values = np.asarray(self._action_values, dtype=np.float64)
         fig, ax = plt.subplots(1, 1, figsize=(6, 4))
-        ax.hist(values, bins=self.action_hist_bins, range=(-1.0, 1.0), color="steelblue", alpha=0.85)
-        ax.set_title(f"Action[{self.action_component_idx}] Histogram (latest window)")
-        ax.set_xlabel("value")
+
+        rounded = np.round(values)
+        is_discrete = bool(np.all(np.abs(values - rounded) < 1e-9))
+        if is_discrete:
+            ints = rounded.astype(int)
+            min_v = int(np.min(ints))
+            max_v = int(np.max(ints))
+            bins = np.arange(min_v - 0.5, max_v + 1.5, 1.0)
+            ax.hist(ints, bins=bins, color="steelblue", alpha=0.85)
+            ax.set_xticks(np.arange(min_v, max_v + 1))
+        else:
+            ax.hist(values, bins=self.action_hist_bins, color="steelblue", alpha=0.85)
+
+        ax.set_title("Action Histogram (latest window)")
+        ax.set_xlabel("action value")
         ax.set_ylabel("count")
         ax.grid(alpha=0.3)
         fig.tight_layout()
         fig.savefig(
-            self.plot_dir / f"action{self.action_component_idx + 1}_hist_step_{self.num_timesteps:012d}.png",
+            self.plot_dir / f"action_hist_step_{self.num_timesteps:012d}.png",
             dpi=130,
         )
         plt.close(fig)
@@ -1355,38 +1434,8 @@ class HealthPlotCheckpointCallback(BaseCallback):
             except Exception:
                 pass
 
-    def _clamp_alpha(self) -> None:
-        """Clamp de log_ent_coef para mantener alpha dentro de [alpha_min, alpha_max]."""
-        if self.alpha_max <= 0 and self.alpha_min <= 0:
-            return
-        log_ent_coef = getattr(self.model, "log_ent_coef", None)
-        if log_ent_coef is None:
-            return
-        import torch as _th
-        if not isinstance(log_ent_coef, _th.Tensor):
-            return
-
-        min_log = None
-        max_log = None
-        if self.alpha_min > 0:
-            min_log = float(np.log(self.alpha_min))
-        if self.alpha_max > 0:
-            max_log = float(np.log(self.alpha_max))
-        if min_log is not None and max_log is not None and min_log > max_log:
-            min_log, max_log = max_log, min_log
-
-        with _th.no_grad():
-            if min_log is not None and max_log is not None:
-                log_ent_coef.data.clamp_(min=min_log, max=max_log)
-            elif min_log is not None:
-                log_ent_coef.data.clamp_(min=min_log)
-            elif max_log is not None:
-                log_ent_coef.data.clamp_(max=max_log)
-
     def _on_step(self) -> bool:
-        # Clamp alpha cada step para prevenir divergencia.
-        self._clamp_alpha()
-        self._update_action_component_buffer()
+        self._update_action_buffer()
 
         dones = self.locals.get("dones", [])
         infos = self.locals.get("infos", [])
@@ -1403,7 +1452,6 @@ class HealthPlotCheckpointCallback(BaseCallback):
                 self._successes.append(float(self._running_ep_success.get(env_idx, 0.0)))
                 self._running_ep_success[env_idx] = 0.0
 
-        # Checkpoint periódico
         if (self.num_timesteps - self.last_ckpt_step) >= self.checkpoint_freq:
             self.last_ckpt_step = self.num_timesteps
             ckpt_path = self.ckpt_dir / f"step_{self.num_timesteps:012d}"
@@ -1411,13 +1459,12 @@ class HealthPlotCheckpointCallback(BaseCallback):
             if self.verbose:
                 print(f"[CKPT] t={self.num_timesteps:,} -> {ckpt_path.name}.zip")
 
-        # Health + CSV
         if (self.num_timesteps - self.last_health_step) >= self.health_freq:
             self.last_health_step = self.num_timesteps
             task_name = self._active_task_name()
             stats = self._collect_episode_stats()
             alpha = self._read_alpha()
-            action_mean, action_std = self._action_component_stats()
+            action_mean, action_std = self._action_stats()
             elapsed = time.time() - self.t0
 
             self.ts.append(self.num_timesteps)
@@ -1446,23 +1493,20 @@ class HealthPlotCheckpointCallback(BaseCallback):
             self.logger.record(f"train/{self.action_mean_key}", action_mean)
             self.logger.record(f"train/{self.action_std_key}", action_std)
 
-            pct = self.num_timesteps
             print(
-                f"[HEALTH] t={pct:,} task={task_name} "
+                f"[HEALTH] t={self.num_timesteps:,} task={task_name} "
                 f"ret={stats['mean_return']:.2f} "
                 f"succ={stats['success_rate']:.3f} "
                 f"len={stats['mean_ep_len']:.1f} "
-                f"alpha={alpha:.5f} "
                 f"{self.action_mean_key}={action_mean:.4f} "
                 f"{self.action_std_key}={action_std:.4f}"
             )
             self._maybe_save_best(stats)
 
-        # Plot periódico
         if (self.num_timesteps - self.last_plot_step) >= self.plot_freq:
             self.last_plot_step = self.num_timesteps
             self._plot_metrics()
-            self._plot_action_component_hist()
+            self._plot_action_hist()
 
         return True
 
@@ -1584,28 +1628,44 @@ def _export_tb_scalars(run_dir: Path, tags: Sequence[str]) -> Optional[Path]:
 
 
 def _compute_forgetting(eval_history: List[Dict[str, Dict[str, float]]], tasks: List[str]) -> float:
-    """Promedio de Fi = p_i(tras entrenar i) - p_i(final), sobre tareas únicas."""
+    """Promedio de Fi = max_t p_i(t) - p_i(final), sobre tareas únicas."""
     unique_tasks = list(dict.fromkeys(tasks))
     if len(eval_history) < 2:
         return float("nan")
 
-    first_seen_idx: Dict[str, int] = {}
-    for phase_idx, trained_task in enumerate(tasks):
-        if trained_task not in first_seen_idx:
-            first_seen_idx[trained_task] = phase_idx
-
     final = eval_history[-1]
     fis: List[float] = []
     for task in unique_tasks:
-        idx = first_seen_idx[task]
-        if idx >= len(eval_history):
+        hist: List[float] = []
+        for phase_result in eval_history:
+            score = phase_result.get(task, {}).get("success_rate", float("nan"))
+            if not math.isnan(score):
+                hist.append(score)
+        if not hist:
             continue
-        p_then = eval_history[idx].get(task, {}).get("success_rate", float("nan"))
+        p_then = float(max(hist))
         p_final = final.get(task, {}).get("success_rate", float("nan"))
         if math.isnan(p_then) or math.isnan(p_final):
             continue
         fis.append(p_then - p_final)
     return float(np.mean(fis)) if fis else float("nan")
+
+
+def _compute_diagonal_success(
+    eval_history: List[Dict[str, Dict[str, float]]],
+    tasks: List[str],
+) -> float:
+    """Promedio de éxito inmediatamente después de entrenar cada tarea."""
+    diagonal: List[float] = []
+    for phase_idx, trained_task in enumerate(tasks):
+        if phase_idx >= len(eval_history):
+            break
+        score = eval_history[phase_idx].get(trained_task, {}).get(
+            "success_rate", float("nan")
+        )
+        if not math.isnan(score):
+            diagonal.append(float(score))
+    return float(np.mean(diagonal)) if diagonal else float("nan")
 
 
 def run_continual(args: argparse.Namespace, tasks: List[str], run_dir: Path) -> Dict[str, Any]:
@@ -1619,9 +1679,8 @@ def run_continual(args: argparse.Namespace, tasks: List[str], run_dir: Path) -> 
             append_task_id=args.append_task_id,
             render_mode=None,
             disable_env_checker=args.disable_env_checker,
-            relax_obs_bounds=args.relax_obs_bounds,
-            reward_func_version=args.reward_func_version,
-            terminate_on_success=args.terminate_on_success,
+            obs_mode=args.obs_mode,
+            normalize_obs=args.normalize_obs,
         ),
         filename=str(run_dir / "train.monitor.csv"),
         info_keywords=("task_name", "task_idx", "is_success"),
@@ -1634,9 +1693,8 @@ def run_continual(args: argparse.Namespace, tasks: List[str], run_dir: Path) -> 
             append_task_id=args.append_task_id,
             render_mode=None,
             disable_env_checker=args.disable_env_checker,
-            relax_obs_bounds=args.relax_obs_bounds,
-            reward_func_version=args.reward_func_version,
-            terminate_on_success=args.terminate_on_success,
+            obs_mode=args.obs_mode,
+            normalize_obs=args.normalize_obs,
         ),
         filename=str(run_dir / "eval.monitor.csv"),
         info_keywords=("task_name", "task_idx", "is_success"),
@@ -1646,24 +1704,28 @@ def run_continual(args: argparse.Namespace, tasks: List[str], run_dir: Path) -> 
         raise RuntimeError("Con --adapter-enabled debes usar --append-task-id para routing por tarea.")
 
     model = _build_model(
-        algo=args.algo,
         env=train_env,
         seed=args.seed,
         device=args.device,
         tensorboard_dir=run_dir / "tb",
+        obs_mode=args.obs_mode,
         adapter_enabled=args.adapter_enabled,
         adapter_num_tasks=len(unique_tasks),
         adapter_rank=args.adapter_rank,
         adapter_alpha=args.adapter_alpha,
         adapter_features_dim=args.adapter_features_dim,
         adapter_backbone_hidden_dim=args.adapter_backbone_hidden_dim,
-        append_task_id=args.append_task_id,
-        sac_learning_rate=args.sac_learning_rate,
-        sac_batch_size=args.sac_batch_size,
-        sac_gradient_steps=args.sac_gradient_steps,
-        sac_buffer_size=args.sac_buffer_size,
-        sac_learning_starts=args.sac_learning_starts,
-        sac_target_entropy=args.sac_target_entropy,
+        ppo_learning_rate=args.ppo_learning_rate,
+        ppo_n_steps=args.ppo_n_steps,
+        ppo_batch_size=args.ppo_batch_size,
+        ppo_n_epochs=args.ppo_n_epochs,
+        ppo_gamma=args.ppo_gamma,
+        ppo_gae_lambda=args.ppo_gae_lambda,
+        ppo_clip_range=args.ppo_clip_range,
+        ppo_ent_coef=args.ppo_ent_coef,
+        ppo_vf_coef=args.ppo_vf_coef,
+        ppo_max_grad_norm=args.ppo_max_grad_norm,
+        ppo_target_kl=args.ppo_target_kl,
     )
     health_cb = HealthPlotCheckpointCallback(
         run_dir=run_dir,
@@ -1674,12 +1736,12 @@ def run_continual(args: argparse.Namespace, tasks: List[str], run_dir: Path) -> 
         save_best_checkpoints=args.save_best_checkpoints,
         improvement_metric=args.improvement_metric,
         min_improvement_delta=args.min_improvement_delta,
-        alpha_min=args.alpha_min,
-        alpha_max=args.alpha_max,
+        action_component_idx=args.action_component_idx,
+        action_window_size=args.action_window_size,
+        action_hist_bins=args.action_hist_bins,
         verbose=1,
     )
 
-    # Install per-task action heads for the actor (prevents forgetting).
     if args.adapter_enabled:
         _install_multi_heads(model, num_tasks=len(unique_tasks))
 
@@ -1716,26 +1778,9 @@ def run_continual(args: argparse.Namespace, tasks: List[str], run_dir: Path) -> 
             )
 
         if args.reset_optimizers_every_task:
-            reset_optimizers = _reset_optimizers_for_task(
-                model=model,
-                reset_ent_coef=args.reset_ent_coef_every_task,
-                ent_coef_log_reset_value=args.ent_coef_reset_log_value,
-            )
+            reset_optimizers = _reset_optimizers_for_task(model)
             if reset_optimizers:
-                print(
-                    f"[OPT] phase={phase} reset={','.join(reset_optimizers)}"
-                )
-
-        warmup_until = _configure_sac_phase_random_warmup(
-            model=model,
-            random_steps_per_task=args.sac_random_steps_per_task,
-        )
-        if warmup_until is not None:
-            warmup_from = max(0, warmup_until - max(0, int(args.sac_random_steps_per_task)))
-            print(
-                f"[SAC] phase={phase} random_warmup_steps={args.sac_random_steps_per_task} "
-                f"learning_starts={warmup_from}->{warmup_until}"
-            )
+                print(f"[OPT] phase={phase} reset={','.join(reset_optimizers)}")
 
         model.learn(
             total_timesteps=args.steps_per_task,
@@ -1745,17 +1790,18 @@ def run_continual(args: argparse.Namespace, tasks: List[str], run_dir: Path) -> 
         )
         total_steps += int(args.steps_per_task)
 
-        if args.reset_replay_every_task and hasattr(model, "replay_buffer"):
-            rb = getattr(model, "replay_buffer")
-            if rb is not None and hasattr(rb, "reset"):
-                rb.reset()
-
         phase_result: Dict[str, Dict[str, float]] = {}
         records: List[EvalRecord] = []
         for eval_task in unique_tasks:
             eval_task_idx = _suite_env(eval_env)._task_idx(eval_task)
             _set_active_heads(model, eval_task_idx)
-            stats = evaluate_task(model, eval_env, eval_task, args.eval_episodes)
+            stats = evaluate_task(
+                model,
+                eval_env,
+                eval_task,
+                args.eval_episodes,
+                deterministic=args.eval_deterministic,
+            )
             phase_result[eval_task] = stats
             records.append(
                 EvalRecord(
@@ -1769,7 +1815,7 @@ def run_continual(args: argparse.Namespace, tasks: List[str], run_dir: Path) -> 
                 )
             )
             print(
-                f"  eval={eval_task:<24} "
+                f"  eval={eval_task:<30} "
                 f"return={stats['mean_return']:>9.2f} "
                 f"success={stats['success_rate']:.3f}"
             )
@@ -1778,7 +1824,8 @@ def run_continual(args: argparse.Namespace, tasks: List[str], run_dir: Path) -> 
         eval_history.append(phase_result)
 
         if args.save_model_each_phase:
-            model.save(str(run_dir / f"model_phase_{phase:02d}_{task}"))
+            safe_task = task.replace("/", "_")
+            model.save(str(run_dir / f"model_phase_{phase:02d}_{safe_task}"))
 
     elapsed = time.time() - t0
     model.save(str(run_dir / "model_final"))
@@ -1790,7 +1837,9 @@ def run_continual(args: argparse.Namespace, tasks: List[str], run_dir: Path) -> 
     ]
     return {
         "mode": "continual",
-        "algo": args.algo,
+        "algo": "ppo",
+        "obs_mode": args.obs_mode,
+        "eval_deterministic": args.eval_deterministic,
         "task_preset": args.task_preset,
         "tasks_sequence": tasks,
         "unique_tasks": unique_tasks,
@@ -1807,15 +1856,11 @@ def run_continual(args: argparse.Namespace, tasks: List[str], run_dir: Path) -> 
         "adapter_train_full_critic_after_warmup": (
             args.adapter_train_full_critic_after_warmup if args.adapter_enabled else None
         ),
-        "reward_func_version": args.reward_func_version,
-        "terminate_on_success": args.terminate_on_success,
         "reset_optimizers_every_task": args.reset_optimizers_every_task,
-        "reset_ent_coef_every_task": args.reset_ent_coef_every_task,
-        "ent_coef_reset_log_value": args.ent_coef_reset_log_value if args.algo == "sac" else None,
         "reset_metric_windows_every_task": args.reset_metric_windows_every_task,
-        "sac_random_steps_per_task": args.sac_random_steps_per_task if args.algo == "sac" else None,
         "timesteps": total_steps,
         "elapsed_sec": elapsed,
+        "avg_diagonal_success_rate": _compute_diagonal_success(eval_history, tasks),
         "avg_final_success_rate": float(np.mean(final_successes)) if final_successes else float("nan"),
         "avg_forgetting": _compute_forgetting(eval_history, tasks),
     }
@@ -1830,14 +1875,12 @@ def run_multitask(args: argparse.Namespace, tasks: List[str], run_dir: Path) -> 
             append_task_id=args.append_task_id,
             render_mode=None,
             disable_env_checker=args.disable_env_checker,
-            relax_obs_bounds=args.relax_obs_bounds,
-            reward_func_version=args.reward_func_version,
-            terminate_on_success=args.terminate_on_success,
+            obs_mode=args.obs_mode,
+            normalize_obs=args.normalize_obs,
         ),
         filename=str(run_dir / "train.monitor.csv"),
         info_keywords=("task_name", "task_idx", "is_success"),
     )
-    # `set_task(None)` => muestreo aleatorio por episodio.
     _suite_env(train_env).set_task(None)
 
     eval_env = Monitor(
@@ -1848,33 +1891,36 @@ def run_multitask(args: argparse.Namespace, tasks: List[str], run_dir: Path) -> 
             append_task_id=args.append_task_id,
             render_mode=None,
             disable_env_checker=args.disable_env_checker,
-            relax_obs_bounds=args.relax_obs_bounds,
-            reward_func_version=args.reward_func_version,
-            terminate_on_success=args.terminate_on_success,
+            obs_mode=args.obs_mode,
+            normalize_obs=args.normalize_obs,
         ),
         filename=str(run_dir / "eval.monitor.csv"),
         info_keywords=("task_name", "task_idx", "is_success"),
     )
 
     model = _build_model(
-        algo=args.algo,
         env=train_env,
         seed=args.seed,
         device=args.device,
         tensorboard_dir=run_dir / "tb",
+        obs_mode=args.obs_mode,
         adapter_enabled=args.adapter_enabled,
         adapter_num_tasks=len(list(dict.fromkeys(tasks))),
         adapter_rank=args.adapter_rank,
         adapter_alpha=args.adapter_alpha,
         adapter_features_dim=args.adapter_features_dim,
         adapter_backbone_hidden_dim=args.adapter_backbone_hidden_dim,
-        append_task_id=args.append_task_id,
-        sac_learning_rate=args.sac_learning_rate,
-        sac_batch_size=args.sac_batch_size,
-        sac_gradient_steps=args.sac_gradient_steps,
-        sac_buffer_size=args.sac_buffer_size,
-        sac_learning_starts=args.sac_learning_starts,
-        sac_target_entropy=args.sac_target_entropy,
+        ppo_learning_rate=args.ppo_learning_rate,
+        ppo_n_steps=args.ppo_n_steps,
+        ppo_batch_size=args.ppo_batch_size,
+        ppo_n_epochs=args.ppo_n_epochs,
+        ppo_gamma=args.ppo_gamma,
+        ppo_gae_lambda=args.ppo_gae_lambda,
+        ppo_clip_range=args.ppo_clip_range,
+        ppo_ent_coef=args.ppo_ent_coef,
+        ppo_vf_coef=args.ppo_vf_coef,
+        ppo_max_grad_norm=args.ppo_max_grad_norm,
+        ppo_target_kl=args.ppo_target_kl,
     )
     health_cb = HealthPlotCheckpointCallback(
         run_dir=run_dir,
@@ -1885,10 +1931,12 @@ def run_multitask(args: argparse.Namespace, tasks: List[str], run_dir: Path) -> 
         save_best_checkpoints=args.save_best_checkpoints,
         improvement_metric=args.improvement_metric,
         min_improvement_delta=args.min_improvement_delta,
-        alpha_min=args.alpha_min,
-        alpha_max=args.alpha_max,
+        action_component_idx=args.action_component_idx,
+        action_window_size=args.action_window_size,
+        action_hist_bins=args.action_hist_bins,
         verbose=1,
     )
+
     t0 = time.time()
     model.learn(
         total_timesteps=args.total_steps,
@@ -1901,7 +1949,15 @@ def run_multitask(args: argparse.Namespace, tasks: List[str], run_dir: Path) -> 
     rows: List[EvalRecord] = []
     summary: Dict[str, Dict[str, float]] = {}
     for task in unique_tasks:
-        stats = evaluate_task(model, eval_env, task, args.eval_episodes)
+        task_idx = _suite_env(eval_env)._task_idx(task)
+        _set_active_heads(model, task_idx)
+        stats = evaluate_task(
+            model,
+            eval_env,
+            task,
+            args.eval_episodes,
+            deterministic=args.eval_deterministic,
+        )
         summary[task] = stats
         rows.append(
             EvalRecord(
@@ -1915,7 +1971,7 @@ def run_multitask(args: argparse.Namespace, tasks: List[str], run_dir: Path) -> 
             )
         )
         print(
-            f"  eval={task:<24} "
+            f"  eval={task:<30} "
             f"return={stats['mean_return']:>9.2f} "
             f"success={stats['success_rate']:.3f}"
         )
@@ -1928,13 +1984,13 @@ def run_multitask(args: argparse.Namespace, tasks: List[str], run_dir: Path) -> 
     success_rates = [v["success_rate"] for v in summary.values()]
     return {
         "mode": "multitask",
-        "algo": args.algo,
+        "algo": "ppo",
+        "obs_mode": args.obs_mode,
+        "eval_deterministic": args.eval_deterministic,
         "task_preset": args.task_preset,
         "tasks_sequence": tasks,
         "unique_tasks": unique_tasks,
         "adapter_enabled": args.adapter_enabled,
-        "reward_func_version": args.reward_func_version,
-        "terminate_on_success": args.terminate_on_success,
         "timesteps": args.total_steps,
         "elapsed_sec": elapsed,
         "avg_success_rate": float(np.mean(success_rates)) if success_rates else float("nan"),
@@ -1942,30 +1998,32 @@ def run_multitask(args: argparse.Namespace, tasks: List[str], run_dir: Path) -> 
 
 
 def build_parser() -> argparse.ArgumentParser:
-    p = argparse.ArgumentParser("Meta-World Continual World runner")
+    p = argparse.ArgumentParser("MiniGrid Continual RL runner (adapters + PPO)")
     p.add_argument("--mode", choices=["continual", "multitask"], default="continual")
-    p.add_argument("--algo", choices=["sac", "ppo"], default="sac")
-    p.add_argument("--task-preset", default="cw10")
-    p.add_argument("--tasks", type=str, default=None, help="CSV de tareas v3")
-    p.add_argument("--steps-per-task", type=int, default=1_000_000)
+    p.add_argument("--algo", choices=["ppo"], default="ppo")
+    p.add_argument("--task-preset", default="smoke4")
+    p.add_argument("--tasks", type=str, default=None, help="CSV de env IDs (sobrescribe preset)")
+    p.add_argument("--steps-per-task", type=int, default=300_000)
     p.add_argument("--total-steps", type=int, default=1_000_000)
     p.add_argument("--eval-episodes", type=int, default=10)
-    p.add_argument("--max-episode-steps", type=int, default=200)
-    p.add_argument(
-        "--reward-func-version",
-        type=str,
-        default="v2",
-        help="Versión de reward en Meta-World (ej. v2). Usa '' para default de la env.",
-    )
-    p.add_argument(
-        "--terminate-on-success",
-        action=argparse.BooleanOptionalAction,
-        default=True,
-        help="Si está activo, el episodio termina al primer success en Meta-World.",
-    )
+    p.add_argument("--max-episode-steps", type=int, default=300)
     p.add_argument("--seed", type=int, default=42)
     p.add_argument("--device", default="auto")
+    p.add_argument("--obs-mode", choices=["image", "flat"], default="image")
+    p.add_argument(
+        "--eval-deterministic",
+        action=argparse.BooleanOptionalAction,
+        default=True,
+        help="Evaluación greedy (determinística). Desactiva para evaluación estocástica.",
+    )
+    p.add_argument(
+        "--normalize-obs",
+        action=argparse.BooleanOptionalAction,
+        default=True,
+        help="Normalizar observaciones Box si tienen escala > 1.",
+    )
     p.add_argument("--append-task-id", action="store_true")
+
     p.add_argument(
         "--adapter-enabled",
         dest="adapter_enabled",
@@ -2032,8 +2090,8 @@ def build_parser() -> argparse.ArgumentParser:
         "--adapter-train-actor-heads-after-warmup",
         dest="adapter_train_actor_heads_after_warmup",
         action=argparse.BooleanOptionalAction,
-        default=True,
-        help="Tras warm-up, entrenar heads del actor además del adaptador activo.",
+        default=False,
+        help="Tras warm-up, entrenar head/policy del actor además del adaptador activo.",
     )
     p.add_argument(
         "--lora-train-heads-after-warmup",
@@ -2045,71 +2103,32 @@ def build_parser() -> argparse.ArgumentParser:
         "--adapter-train-full-critic-after-warmup",
         dest="adapter_train_full_critic_after_warmup",
         action=argparse.BooleanOptionalAction,
-        default=True,
-        help="Tras warm-up, entrenar crítico completo (recomendado para SAC).",
-    )
-    p.add_argument(
-        "--adapter-share-features-extractor",
-        dest="adapter_share_features_extractor",
-        action=argparse.BooleanOptionalAction,
         default=False,
-        help="No usar. En SAC se fuerza False para evitar gradientes ambiguos.",
+        help="Tras warm-up, entrenar troncal de valor compartida (menos aislamiento CL).",
     )
+
+    p.add_argument("--ppo-learning-rate", type=float, default=3e-4)
+    p.add_argument("--ppo-n-steps", type=int, default=2048)
+    p.add_argument("--ppo-batch-size", type=int, default=256)
+    p.add_argument("--ppo-n-epochs", type=int, default=10)
+    p.add_argument("--ppo-gamma", type=float, default=0.99)
+    p.add_argument("--ppo-gae-lambda", type=float, default=0.95)
+    p.add_argument("--ppo-clip-range", type=float, default=0.2)
+    p.add_argument("--ppo-ent-coef", type=float, default=0.001)
+    p.add_argument("--ppo-vf-coef", type=float, default=0.5)
+    p.add_argument("--ppo-max-grad-norm", type=float, default=0.5)
     p.add_argument(
-        "--lora-share-features-extractor",
-        dest="adapter_share_features_extractor",
-        action=argparse.BooleanOptionalAction,
-        help=argparse.SUPPRESS,
-    )
-    p.add_argument("--sac-learning-rate", type=float, default=3e-4)
-    p.add_argument("--sac-batch-size", type=int, default=256)
-    p.add_argument("--sac-gradient-steps", type=int, default=2)
-    p.add_argument("--sac-buffer-size", type=int, default=1_000_000)
-    p.add_argument("--sac-learning-starts", type=int, default=10_000)
-    p.add_argument(
-        "--sac-target-entropy",
-        type=str,
-        default="auto",
-        help="Target entropy para SAC. 'auto' = -dim(action_space). O un float, ej. '-4'.",
-    )
-    p.add_argument(
-        "--alpha-min",
+        "--ppo-target-kl",
         type=float,
         default=0.03,
-        help=(
-            "Clamp mínimo para alpha en SAC. Ayuda a evitar colapso prematuro "
-            "de exploración. 0=sin clamp inferior."
-        ),
+        help="Early stop por KL objetivo en PPO (None/0 para desactivar).",
     )
-    p.add_argument(
-        "--alpha-max",
-        type=float,
-        default=1.0,
-        help="Clamp m\u00e1ximo para el coeficiente de entrop\u00eda alpha. Previene divergencia. 0=sin clamp.",
-    )
-    p.add_argument(
-        "--sac-random-steps-per-task",
-        type=int,
-        default=50_000,
-        help="Acciones aleatorias al inicio de cada tarea (protocolo CW en SAC).",
-    )
+
     p.add_argument(
         "--reset-optimizers-every-task",
         action=argparse.BooleanOptionalAction,
         default=True,
-        help="Reset de estados de optimizadores al cambiar de tarea.",
-    )
-    p.add_argument(
-        "--reset-ent-coef-every-task",
-        action=argparse.BooleanOptionalAction,
-        default=False,
-        help="En SAC: resetear log_ent_coef al cambiar de tarea.",
-    )
-    p.add_argument(
-        "--ent-coef-reset-log-value",
-        type=float,
-        default=0.0,
-        help="Valor de reinicio para log_ent_coef (alpha=exp(valor)).",
+        help="Reset de estados de optimizador al cambiar de tarea.",
     )
     p.add_argument(
         "--reset-metric-windows-every-task",
@@ -2134,58 +2153,55 @@ def build_parser() -> argparse.ArgumentParser:
         help="Métrica para decidir mejora del best checkpoint.",
     )
     p.add_argument("--min-improvement-delta", type=float, default=1e-6)
+    p.add_argument("--action-component-idx", type=int, default=0)
+    p.add_argument("--action-window-size", type=int, default=50_000)
+    p.add_argument("--action-hist-bins", type=int, default=31)
     p.add_argument("--disable-env-checker", action=argparse.BooleanOptionalAction, default=True)
-    p.add_argument("--relax-obs-bounds", action=argparse.BooleanOptionalAction, default=True)
-    p.add_argument(
-        "--reset-replay-every-task",
-        action=argparse.BooleanOptionalAction,
-        default=True,
-        help="Para SAC/continual: reset de replay buffer entre tareas (similar CW paper).",
-    )
     p.add_argument("--save-model-each-phase", action="store_true")
     p.add_argument("--progress-bar", action="store_true")
     p.add_argument(
         "--log-dir",
-        default="rl/rl_uniandes/drl/mujoco-drl/logs/metaworld_cw",
+        default="logs/minigrid_cw",
     )
     return p
 
 
 def main(argv: Optional[Sequence[str]] = None) -> int:
     args = build_parser().parse_args(argv)
-    if isinstance(args.reward_func_version, str) and args.reward_func_version.strip().lower() in {
-        "",
-        "none",
-        "null",
-    }:
-        args.reward_func_version = None
+    _ensure_minigrid()
+
     if args.adapter_enabled and not args.append_task_id:
         raise ValueError("Con --adapter-enabled debes activar --append-task-id para routing por tarea.")
     if args.adapter_rank <= 0:
         raise ValueError("--adapter-rank debe ser > 0.")
     if args.adapter_warmup_tasks <= 0:
         raise ValueError("--adapter-warmup-tasks debe ser >= 1.")
-    if args.adapter_share_features_extractor:
-        raise ValueError(
-            "--adapter-share-features-extractor no está soportado: en SAC se mantiene False."
+    if args.ppo_n_steps <= 0:
+        raise ValueError("--ppo-n-steps debe ser > 0.")
+    if args.ppo_batch_size <= 0:
+        raise ValueError("--ppo-batch-size debe ser > 0.")
+    if args.ppo_n_epochs <= 0:
+        raise ValueError("--ppo-n-epochs debe ser > 0.")
+    if args.max_episode_steps <= 0:
+        raise ValueError("--max-episode-steps debe ser > 0.")
+    if args.action_window_size <= 0:
+        raise ValueError("--action-window-size debe ser > 0.")
+    if args.ppo_target_kl < 0:
+        raise ValueError("--ppo-target-kl no puede ser negativo.")
+    if args.ppo_target_kl == 0:
+        args.ppo_target_kl = None
+
+    if args.ppo_batch_size > args.ppo_n_steps:
+        print(
+            "[WARN] --ppo-batch-size es mayor que --ppo-n-steps en n_env=1; "
+            "SB3 lo maneja pero puede degradar entrenamiento."
         )
-    if args.sac_learning_starts < 0:
-        raise ValueError("--sac-learning-starts no puede ser negativo.")
-    if args.sac_random_steps_per_task < 0:
-        raise ValueError("--sac-random-steps-per-task no puede ser negativo.")
-    if args.sac_gradient_steps <= 0:
-        raise ValueError("--sac-gradient-steps debe ser > 0.")
-    if args.alpha_min < 0:
-        raise ValueError("--alpha-min no puede ser negativo.")
-    if args.alpha_max < 0:
-        raise ValueError("--alpha-max no puede ser negativo.")
-    if args.alpha_min > 0 and args.alpha_max > 0 and args.alpha_min > args.alpha_max:
-        raise ValueError("--alpha-min no puede ser mayor que --alpha-max.")
+
     _set_seed(args.seed)
 
     tasks = resolve_task_sequence(args.task_preset, args.tasks)
     run_name = (
-        f"{args.mode}_{args.algo}_{args.task_preset}_"
+        f"{args.mode}_{args.algo}_minigrid_{args.task_preset}_"
         f"{time.strftime('%Y%m%d_%H%M%S')}_n{len(tasks)}"
     )
     run_dir = Path(args.log_dir) / run_name
@@ -2199,7 +2215,7 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
     )
 
     print(f"Run dir: {run_dir}")
-    print(f"Mode={args.mode} Algo={args.algo} Tasks={len(tasks)}")
+    print(f"Mode={args.mode} Algo={args.algo} Benchmark=minigrid Tasks={len(tasks)}")
     print(f"Versions file: {versions_path}")
     print(f"Task sequence: {tasks}\n")
 
@@ -2207,6 +2223,7 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
         summary = run_continual(args, tasks, run_dir)
     else:
         summary = run_multitask(args, tasks, run_dir)
+
     tb_export = _export_tb_scalars(run_dir, AUDIT_TB_TAGS)
     tb_plot = run_dir / "tb_audit_metrics.png"
     summary["versions"] = versions

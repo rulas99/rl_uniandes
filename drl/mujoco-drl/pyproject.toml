@@ -8,6 +8,7 @@ dependencies = [
     "ipykernel>=7.2.0",
     "matplotlib>=3.10.8",
     "metaworld>=3.0.0",
+    "minigrid>=3.0.0",
     "stable-baselines3>=2.7.1",
     "tensorboard>=2.20.0",
 ]
