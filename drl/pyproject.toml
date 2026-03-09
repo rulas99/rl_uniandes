@@ -1,5 +1,5 @@
 [project]
-name = "mujoco-drl"
+name = "drl-tesis"
 version = "0.1.0"
 description = "Add your description here"
 readme = "README.md"
@@ -9,6 +9,7 @@ dependencies = [
     "matplotlib>=3.10.8",
     "metaworld>=3.0.0",
     "minigrid>=3.0.0",
+    "sb3-contrib>=2.7.1",
     "stable-baselines3>=2.7.1",
     "tensorboard>=2.20.0",
 ]

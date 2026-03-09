@@ -46,7 +46,7 @@ PREFERRED_MINIGRID_SMOKE4: List[str] = [
     "MiniGrid-Unlock-v0"
 ]
 
-PREFERRED_MINIGRID_SMOKE3: List[str] = [
+PREFERRED_MINIGRID_SMOKE4_2: List[str] = [
     "MiniGrid-DoorKey-9x9-v0",
     "MiniGrid-SimpleCrossingS9N1-v0",
     "MiniGrid-LavaCrossingS9N1-v0",
@@ -813,6 +813,118 @@ class BackboneOnlyCNNExtractor(BaseFeaturesExtractor):
         return h.reshape(out_shape)
 
 
+class TaskConditionedBackboneExtractor(BaseFeaturesExtractor):
+    """Backbone MLP con condicionamiento explícito por task id."""
+
+    def __init__(
+        self,
+        observation_space: spaces.Box,
+        features_dim: int = 256,
+        num_tasks: int = 2,
+        backbone_hidden_dim: int = 256,
+        task_emb_dim: int = 16,
+    ):
+        if not isinstance(observation_space, spaces.Box):
+            raise TypeError("TaskConditionedBackboneExtractor requiere observation_space Box.")
+        if num_tasks <= 0:
+            raise ValueError(f"num_tasks debe ser > 0, recibido={num_tasks}.")
+        if task_emb_dim <= 0:
+            raise ValueError(f"task_emb_dim debe ser > 0, recibido={task_emb_dim}.")
+        super().__init__(observation_space, features_dim + task_emb_dim)
+
+        obs_dim = int(np.prod(observation_space.shape))
+        if obs_dim <= num_tasks:
+            raise ValueError("obs_dim debe ser mayor a num_tasks para separar state/task-id.")
+        self.num_tasks = int(num_tasks)
+        self.state_dim = obs_dim - self.num_tasks
+        self.task_emb_dim = int(task_emb_dim)
+        self._features_dim = int(features_dim + task_emb_dim)
+
+        self.backbone = nn.Sequential(
+            nn.Linear(self.state_dim, backbone_hidden_dim),
+            nn.ReLU(),
+            nn.Linear(backbone_hidden_dim, features_dim),
+            nn.ReLU(),
+        )
+        self.task_proj = nn.Linear(self.num_tasks, self.task_emb_dim, bias=False)
+
+    def forward(self, obs: th.Tensor) -> th.Tensor:
+        state = obs[..., : self.state_dim]
+        one_hot = obs[..., self.state_dim : self.state_dim + self.num_tasks]
+        h = self.backbone(state)
+        task_h = self.task_proj(one_hot)
+        return th.cat([h, task_h], dim=-1)
+
+
+class TaskConditionedCNNExtractor(BaseFeaturesExtractor):
+    """Backbone CNN con condicionamiento explícito por task id."""
+
+    def __init__(
+        self,
+        observation_space: spaces.Box,
+        features_dim: int = 256,
+        num_tasks: int = 2,
+        task_emb_dim: int = 16,
+        image_shape: Optional[Sequence[int]] = None,
+        image_channels: int = 3,
+    ):
+        if not isinstance(observation_space, spaces.Box):
+            raise TypeError("TaskConditionedCNNExtractor requiere observation_space Box.")
+        if num_tasks <= 0:
+            raise ValueError(f"num_tasks debe ser > 0, recibido={num_tasks}.")
+        if task_emb_dim <= 0:
+            raise ValueError(f"task_emb_dim debe ser > 0, recibido={task_emb_dim}.")
+        super().__init__(observation_space, features_dim + task_emb_dim)
+
+        obs_dim = int(np.prod(observation_space.shape))
+        if obs_dim <= num_tasks:
+            raise ValueError("obs_dim debe ser mayor a num_tasks para separar state/task-id.")
+        self.num_tasks = int(num_tasks)
+        self.state_dim = obs_dim - self.num_tasks
+        self.task_emb_dim = int(task_emb_dim)
+        self._features_dim = int(features_dim + task_emb_dim)
+
+        height, width, channels = _infer_image_shape(
+            state_dim=self.state_dim,
+            image_shape=image_shape,
+            image_channels=image_channels,
+        )
+        self.height = int(height)
+        self.width = int(width)
+        self.channels = int(channels)
+
+        self.cnn = nn.Sequential(
+            nn.Conv2d(self.channels, 32, kernel_size=3, stride=1, padding=1),
+            nn.ReLU(),
+            nn.Conv2d(32, 64, kernel_size=3, stride=1, padding=1),
+            nn.ReLU(),
+            nn.Conv2d(64, 64, kernel_size=3, stride=1, padding=1),
+            nn.ReLU(),
+            nn.Flatten(),
+        )
+        with th.no_grad():
+            dummy = th.zeros(1, self.channels, self.height, self.width)
+            n_flatten = int(self.cnn(dummy).shape[1])
+
+        self.image_proj = nn.Sequential(
+            nn.Linear(n_flatten, features_dim),
+            nn.ReLU(),
+        )
+        self.task_proj = nn.Linear(self.num_tasks, self.task_emb_dim, bias=False)
+
+    def forward(self, obs: th.Tensor) -> th.Tensor:
+        state_flat = obs[..., : self.state_dim]
+        one_hot = obs[..., self.state_dim : self.state_dim + self.num_tasks]
+        batch_shape = tuple(state_flat.shape[:-1])
+        flat_state = state_flat.reshape(-1, self.state_dim)
+        images = flat_state.reshape(-1, self.height, self.width, self.channels).permute(0, 3, 1, 2)
+
+        h = self.image_proj(self.cnn(images))
+        h = h.reshape(*batch_shape, -1)
+        task_h = self.task_proj(one_hot)
+        return th.cat([h, task_h], dim=-1)
+
+
 def _iter_routed_extractors(policy: Any) -> List[nn.Module]:
     candidates = [getattr(policy, "features_extractor", None)]
 
@@ -873,6 +985,17 @@ def _clone_optimizer(
     return cls(params, **kwargs)
 
 
+def _trainable_parameters(module: nn.Module) -> List[th.nn.Parameter]:
+    return [p for p in module.parameters() if p.requires_grad]
+
+
+def _copy_linear_to_all_heads(orig: nn.Linear, multi: MultiHeadLinear) -> None:
+    with th.no_grad():
+        for head in multi.heads:
+            head.weight.copy_(orig.weight)
+            head.bias.copy_(orig.bias)
+
+
 def _install_multi_heads(model: BaseAlgorithm, num_tasks: int) -> None:
     """Instala heads por tarea para la salida de política cuando sea lineal."""
     policy = model.policy
@@ -883,18 +1006,14 @@ def _install_multi_heads(model: BaseAlgorithm, num_tasks: int) -> None:
     action_net = getattr(policy, "action_net", None)
     if isinstance(action_net, nn.Linear):
         multi = MultiHeadLinear(action_net.in_features, action_net.out_features, num_tasks)
-        with th.no_grad():
-            multi.heads[0].weight.copy_(action_net.weight)
-            multi.heads[0].bias.copy_(action_net.bias)
+        _copy_linear_to_all_heads(action_net, multi)
         policy.action_net = multi.to(device)
         replaced.append("policy.action_net")
 
     value_net = getattr(policy, "value_net", None)
     if isinstance(value_net, nn.Linear):
         multi = MultiHeadLinear(value_net.in_features, value_net.out_features, num_tasks)
-        with th.no_grad():
-            multi.heads[0].weight.copy_(value_net.weight)
-            multi.heads[0].bias.copy_(value_net.bias)
+        _copy_linear_to_all_heads(value_net, multi)
         policy.value_net = multi.to(device)
         replaced.append("policy.value_net")
 
@@ -905,17 +1024,21 @@ def _install_multi_heads(model: BaseAlgorithm, num_tasks: int) -> None:
             if orig is None or not isinstance(orig, nn.Linear):
                 continue
             multi = MultiHeadLinear(orig.in_features, orig.out_features, num_tasks)
-            with th.no_grad():
-                multi.heads[0].weight.copy_(orig.weight)
-                multi.heads[0].bias.copy_(orig.bias)
+            _copy_linear_to_all_heads(orig, multi)
             setattr(actor, attr_name, multi.to(device))
             replaced.append(f"actor.{attr_name}")
 
     if hasattr(policy, "optimizer") and getattr(policy, "optimizer") is not None:
-        policy.optimizer = _clone_optimizer(policy.optimizer, policy.parameters())
+        params = _trainable_parameters(policy)
+        if not params:
+            params = list(policy.parameters())
+        policy.optimizer = _clone_optimizer(policy.optimizer, params)
 
     if actor is not None and getattr(actor, "optimizer", None) is not None:
-        actor.optimizer = _clone_optimizer(actor.optimizer, actor.parameters())
+        params = _trainable_parameters(actor)
+        if not params:
+            params = list(actor.parameters())
+        actor.optimizer = _clone_optimizer(actor.optimizer, params)
 
     if replaced:
         print(f"[MULTI-HEAD] Installed {num_tasks} heads on: {', '.join(replaced)}")
@@ -940,8 +1063,8 @@ def _set_trainable_for_task(
 ) -> str:
     """Configure trainable params for a continual phase.
 
-    Warm-up: full shared network + active per-task heads.
-    Post warm-up (PEFT): active adapter + active per-task heads only, with
+    Warm-up: full shared network (+ adapters opcionales) usando head compartido.
+    Post warm-up (PEFT): adapter activo + head activo si existe multi-head, con
     optional unfreezing of shared actor/value trunks.
     """
     policy = model.policy
@@ -961,8 +1084,8 @@ def _set_trainable_for_task(
             p.requires_grad = True
 
         if train_active_adapter_in_warmup:
-            return "warmup_full+active_adapter+active_heads"
-        return "warmup_full+active_heads"
+            return "warmup_full+active_adapter+shared_head"
+        return "warmup_full+shared_head"
 
     for p in policy.parameters():
         p.requires_grad = False
@@ -979,11 +1102,16 @@ def _set_trainable_for_task(
 
     mode_parts = ["adapter"]
 
+    has_multi_head = False
     for module in policy.modules():
         if isinstance(module, MultiHeadLinear):
+            has_multi_head = True
             for p in module.heads[task_idx].parameters():
                 p.requires_grad = True
-    mode_parts.append("active_heads")
+    if has_multi_head:
+        mode_parts.append("active_heads")
+    else:
+        mode_parts.append("shared_head")
 
     if train_actor_heads_after_warmup:
         for name, p in policy.named_parameters():
@@ -995,6 +1123,9 @@ def _set_trainable_for_task(
                 continue
             if name.startswith("mlp_extractor.policy_net"):
                 p.requires_grad = True
+                continue
+            if name.startswith("action_net") or name.startswith("actor.mu") or name.startswith("actor.log_std"):
+                p.requires_grad = True
         mode_parts.append("policy_trunk")
 
     if train_full_critic_after_warmup:
@@ -1002,6 +1133,9 @@ def _set_trainable_for_task(
             if "features_extractor" in name:
                 continue
             if name.startswith("mlp_extractor.value_net"):
+                p.requires_grad = True
+                continue
+            if name.startswith("value_net"):
                 p.requires_grad = True
         mode_parts.append("value_trunk")
 
@@ -1025,7 +1159,10 @@ def _reset_optimizers_for_task(model: BaseAlgorithm) -> List[str]:
     reset_names: List[str] = []
     policy_opt = getattr(model.policy, "optimizer", None)
     if policy_opt is not None:
-        model.policy.optimizer = _clone_optimizer(policy_opt, model.policy.parameters())
+        params = _trainable_parameters(model.policy)
+        if not params:
+            params = list(model.policy.parameters())
+        model.policy.optimizer = _clone_optimizer(policy_opt, params)
         reset_names.append("policy")
     return reset_names
 
@@ -1042,6 +1179,8 @@ def _build_model(
     adapter_alpha: float,
     adapter_features_dim: int,
     adapter_backbone_hidden_dim: int,
+    task_conditioning: str,
+    task_emb_dim: int,
     ppo_learning_rate: float,
     ppo_n_steps: int,
     ppo_batch_size: int,
@@ -1049,6 +1188,7 @@ def _build_model(
     ppo_gamma: float,
     ppo_gae_lambda: float,
     ppo_clip_range: float,
+    ppo_clip_range_vf: Optional[float],
     ppo_ent_coef: float,
     ppo_vf_coef: float,
     ppo_max_grad_norm: float,
@@ -1064,6 +1204,7 @@ def _build_model(
         )
 
     num_tasks_in_obs = adapter_num_tasks if bool(getattr(suite, "append_task_id", False)) else 0
+    use_task_conditioning = bool(num_tasks_in_obs > 0 and task_conditioning == "concat")
 
     if adapter_enabled:
         extractor_class: type[BaseFeaturesExtractor]
@@ -1097,29 +1238,36 @@ def _build_model(
         )
     else:
         if use_cnn:
+            extractor_class = TaskConditionedCNNExtractor if use_task_conditioning else BackboneOnlyCNNExtractor
             policy_kwargs = dict(
                 net_arch=dict(
                     pi=[adapter_backbone_hidden_dim],
                     vf=[adapter_backbone_hidden_dim],
                 ),
-                features_extractor_class=BackboneOnlyCNNExtractor,
+                features_extractor_class=extractor_class,
                 features_extractor_kwargs=dict(
                     features_dim=adapter_features_dim,
                     num_tasks=num_tasks_in_obs,
+                    task_emb_dim=task_emb_dim,
                     image_shape=state_source_shape,
                     image_channels=int(state_source_shape[2]),
                 ),
             )
         else:
+            extractor_class = TaskConditionedBackboneExtractor if use_task_conditioning else BackboneOnlyExtractor
             policy_kwargs = dict(
                 net_arch=dict(pi=[256, 256], vf=[256, 256]),
-                features_extractor_class=BackboneOnlyExtractor,
+                features_extractor_class=extractor_class,
                 features_extractor_kwargs=dict(
                     features_dim=adapter_features_dim,
                     num_tasks=num_tasks_in_obs,
                     backbone_hidden_dim=adapter_backbone_hidden_dim,
+                    task_emb_dim=task_emb_dim,
                 ),
             )
+
+        if not use_task_conditioning:
+            policy_kwargs["features_extractor_kwargs"].pop("task_emb_dim", None)
 
     return PPO(
         "MlpPolicy",
@@ -1135,6 +1283,7 @@ def _build_model(
         gamma=ppo_gamma,
         gae_lambda=ppo_gae_lambda,
         clip_range=ppo_clip_range,
+        clip_range_vf=ppo_clip_range_vf,
         ent_coef=ppo_ent_coef,
         vf_coef=ppo_vf_coef,
         max_grad_norm=ppo_max_grad_norm,
@@ -1228,6 +1377,7 @@ class HealthPlotCheckpointCallback(BaseCallback):
 
         self.action_mean_key = "action_mean"
         self.action_std_key = "action_std"
+        self.action_prob_keys: List[str] = []
 
         self.csv_path = self.run_dir / "train_metrics.csv"
         self.plot_dir = self.run_dir / "plots"
@@ -1249,6 +1399,7 @@ class HealthPlotCheckpointCallback(BaseCallback):
         self._successes: List[float] = []
         self._running_ep_success: Dict[int, float] = {}
         self._action_values: deque[float] = deque(maxlen=self.action_window_size)
+        self._action_discrete_values: deque[int] = deque(maxlen=self.action_window_size)
         self.best_score = -float("inf")
         self.t0 = time.time()
 
@@ -1263,11 +1414,14 @@ class HealthPlotCheckpointCallback(BaseCallback):
             "alpha",
             self.action_mean_key,
             self.action_std_key,
-        ]
+        ] + list(self.action_prob_keys)
 
     def _on_training_start(self) -> None:
         self.plot_dir.mkdir(parents=True, exist_ok=True)
         self.ckpt_dir.mkdir(parents=True, exist_ok=True)
+        action_space = getattr(self.training_env, "action_space", None)
+        if isinstance(action_space, spaces.Discrete):
+            self.action_prob_keys = [f"action_p_{idx}" for idx in range(int(action_space.n))]
         if not self.csv_path.exists():
             with self.csv_path.open("w", newline="", encoding="utf-8") as fh:
                 writer = csv.DictWriter(
@@ -1336,12 +1490,27 @@ class HealthPlotCheckpointCallback(BaseCallback):
         for value in values:
             if np.isfinite(value):
                 self._action_values.append(float(value))
+                rounded = round(float(value))
+                if abs(float(value) - float(rounded)) < 1e-9:
+                    self._action_discrete_values.append(int(rounded))
 
     def _action_stats(self) -> tuple[float, float]:
         if not self._action_values:
             return float("nan"), float("nan")
         arr = np.asarray(self._action_values, dtype=np.float64)
         return float(np.mean(arr)), float(np.std(arr))
+
+    def _action_probabilities(self) -> Dict[str, float]:
+        if not self.action_prob_keys:
+            return {}
+        probs = {key: 0.0 for key in self.action_prob_keys}
+        if not self._action_discrete_values:
+            return probs
+        values = np.asarray(self._action_discrete_values, dtype=np.int64)
+        total = max(1, int(values.size))
+        for idx, key in enumerate(self.action_prob_keys):
+            probs[key] = float(np.sum(values == idx) / total)
+        return probs
 
     def _plot_action_hist(self) -> None:
         if not self._action_values:
@@ -1472,6 +1641,7 @@ class HealthPlotCheckpointCallback(BaseCallback):
             stats = self._collect_episode_stats()
             alpha = self._read_alpha()
             action_mean, action_std = self._action_stats()
+            action_probs = self._action_probabilities()
             elapsed = time.time() - self.t0
 
             self.ts.append(self.num_timesteps)
@@ -1483,22 +1653,24 @@ class HealthPlotCheckpointCallback(BaseCallback):
             self.action_component_means.append(action_mean)
             self.action_component_stds.append(action_std)
 
-            self._append_csv_row(
-                {
-                    "timesteps": int(self.num_timesteps),
-                    "elapsed_sec": float(elapsed),
-                    "active_task": task_name,
-                    "mean_return": stats["mean_return"],
-                    "success_rate": stats["success_rate"],
-                    "mean_ep_len": stats["mean_ep_len"],
-                    "alpha": alpha,
-                    self.action_mean_key: action_mean,
-                    self.action_std_key: action_std,
-                }
-            )
+            row = {
+                "timesteps": int(self.num_timesteps),
+                "elapsed_sec": float(elapsed),
+                "active_task": task_name,
+                "mean_return": stats["mean_return"],
+                "success_rate": stats["success_rate"],
+                "mean_ep_len": stats["mean_ep_len"],
+                "alpha": alpha,
+                self.action_mean_key: action_mean,
+                self.action_std_key: action_std,
+            }
+            row.update(action_probs)
+            self._append_csv_row(row)
 
             self.logger.record(f"train/{self.action_mean_key}", action_mean)
             self.logger.record(f"train/{self.action_std_key}", action_std)
+            for key, value in action_probs.items():
+                self.logger.record(f"train/{key}", value)
 
             print(
                 f"[HEALTH] t={self.num_timesteps:,} task={task_name} "
@@ -1658,6 +1830,37 @@ def _compute_forgetting(eval_history: List[Dict[str, Dict[str, float]]], tasks: 
     return float(np.mean(fis)) if fis else float("nan")
 
 
+def _compute_forgetting_learned_only(
+    eval_history: List[Dict[str, Dict[str, float]]],
+    tasks: List[str],
+    success_threshold: float = 0.5,
+) -> float:
+    unique_tasks = list(dict.fromkeys(tasks))
+    if len(eval_history) < 2:
+        return float("nan")
+
+    final = eval_history[-1]
+    fis: List[float] = []
+    for phase_idx, task in enumerate(unique_tasks):
+        if phase_idx >= len(eval_history):
+            break
+        diag = eval_history[phase_idx].get(task, {}).get("success_rate", float("nan"))
+        if math.isnan(diag) or diag < success_threshold:
+            continue
+        hist: List[float] = []
+        for phase_result in eval_history:
+            score = phase_result.get(task, {}).get("success_rate", float("nan"))
+            if not math.isnan(score):
+                hist.append(score)
+        if not hist:
+            continue
+        final_score = final.get(task, {}).get("success_rate", float("nan"))
+        if math.isnan(final_score):
+            continue
+        fis.append(float(max(hist)) - float(final_score))
+    return float(np.mean(fis)) if fis else float("nan")
+
+
 def _compute_diagonal_success(
     eval_history: List[Dict[str, Dict[str, float]]],
     tasks: List[str],
@@ -1673,6 +1876,20 @@ def _compute_diagonal_success(
         if not math.isnan(score):
             diagonal.append(float(score))
     return float(np.mean(diagonal)) if diagonal else float("nan")
+
+
+def _phase_success_matrix(
+    eval_history: List[Dict[str, Dict[str, float]]],
+    tasks: List[str],
+) -> Dict[str, Dict[str, float]]:
+    unique_tasks = list(dict.fromkeys(tasks))
+    matrix: Dict[str, Dict[str, float]] = {}
+    for phase_idx, phase_result in enumerate(eval_history, start=1):
+        matrix[str(phase_idx)] = {
+            task: float(phase_result.get(task, {}).get("success_rate", float("nan")))
+            for task in unique_tasks
+        }
+    return matrix
 
 
 def run_continual(args: argparse.Namespace, tasks: List[str], run_dir: Path) -> Dict[str, Any]:
@@ -1722,6 +1939,8 @@ def run_continual(args: argparse.Namespace, tasks: List[str], run_dir: Path) -> 
         adapter_alpha=args.adapter_alpha,
         adapter_features_dim=args.adapter_features_dim,
         adapter_backbone_hidden_dim=args.adapter_backbone_hidden_dim,
+        task_conditioning=args.task_conditioning,
+        task_emb_dim=args.task_emb_dim,
         ppo_learning_rate=args.ppo_learning_rate,
         ppo_n_steps=args.ppo_n_steps,
         ppo_batch_size=args.ppo_batch_size,
@@ -1729,6 +1948,7 @@ def run_continual(args: argparse.Namespace, tasks: List[str], run_dir: Path) -> 
         ppo_gamma=args.ppo_gamma,
         ppo_gae_lambda=args.ppo_gae_lambda,
         ppo_clip_range=args.ppo_clip_range,
+        ppo_clip_range_vf=args.ppo_clip_range_vf,
         ppo_ent_coef=args.ppo_ent_coef,
         ppo_vf_coef=args.ppo_vf_coef,
         ppo_max_grad_norm=args.ppo_max_grad_norm,
@@ -1749,8 +1969,10 @@ def run_continual(args: argparse.Namespace, tasks: List[str], run_dir: Path) -> 
         verbose=1,
     )
 
+    multi_heads_installed = False
+    multi_head_warmup_tasks = int(args.multi_head_warmup_tasks)
     if args.adapter_enabled:
-        _install_multi_heads(model, num_tasks=len(unique_tasks))
+        multi_head_warmup_tasks = max(multi_head_warmup_tasks, int(args.adapter_warmup_tasks))
 
     eval_history: List[Dict[str, Dict[str, float]]] = []
     total_steps = 0
@@ -1762,9 +1984,13 @@ def run_continual(args: argparse.Namespace, tasks: List[str], run_dir: Path) -> 
             f"[CONTINUAL] fase {phase}/{len(tasks)} task={task} steps={args.steps_per_task:,}\n"
             f"{'=' * 90}"
         )
+        if args.multi_head_enabled and not multi_heads_installed and phase > multi_head_warmup_tasks:
+            _install_multi_heads(model, num_tasks=len(unique_tasks))
+            multi_heads_installed = True
         _suite_env(train_env).set_task(task)
         task_idx = _suite_env(train_env)._task_idx(task)
-        _set_active_heads(model, task_idx)
+        if multi_heads_installed:
+            _set_active_heads(model, task_idx)
         if args.reset_metric_windows_every_task:
             health_cb.reset_task_window(model)
 
@@ -1801,7 +2027,8 @@ def run_continual(args: argparse.Namespace, tasks: List[str], run_dir: Path) -> 
         records: List[EvalRecord] = []
         for eval_task in unique_tasks:
             eval_task_idx = _suite_env(eval_env)._task_idx(eval_task)
-            _set_active_heads(model, eval_task_idx)
+            if multi_heads_installed:
+                _set_active_heads(model, eval_task_idx)
             stats = evaluate_task(
                 model,
                 eval_env,
@@ -1851,6 +2078,10 @@ def run_continual(args: argparse.Namespace, tasks: List[str], run_dir: Path) -> 
         "tasks_sequence": tasks,
         "unique_tasks": unique_tasks,
         "adapter_enabled": args.adapter_enabled,
+        "multi_head_enabled": bool(args.multi_head_enabled),
+        "multi_head_warmup_tasks": int(args.multi_head_warmup_tasks),
+        "task_conditioning": args.task_conditioning,
+        "task_emb_dim": args.task_emb_dim if args.append_task_id else None,
         "adapter_rank": args.adapter_rank if args.adapter_enabled else None,
         "adapter_alpha": args.adapter_alpha if args.adapter_enabled else None,
         "adapter_warmup_tasks": args.adapter_warmup_tasks if args.adapter_enabled else None,
@@ -1870,6 +2101,8 @@ def run_continual(args: argparse.Namespace, tasks: List[str], run_dir: Path) -> 
         "avg_diagonal_success_rate": _compute_diagonal_success(eval_history, tasks),
         "avg_final_success_rate": float(np.mean(final_successes)) if final_successes else float("nan"),
         "avg_forgetting": _compute_forgetting(eval_history, tasks),
+        "avg_forgetting_learned_only": _compute_forgetting_learned_only(eval_history, tasks),
+        "phase_success_matrix": _phase_success_matrix(eval_history, tasks),
     }
 
 
@@ -1917,6 +2150,8 @@ def run_multitask(args: argparse.Namespace, tasks: List[str], run_dir: Path) -> 
         adapter_alpha=args.adapter_alpha,
         adapter_features_dim=args.adapter_features_dim,
         adapter_backbone_hidden_dim=args.adapter_backbone_hidden_dim,
+        task_conditioning=args.task_conditioning,
+        task_emb_dim=args.task_emb_dim,
         ppo_learning_rate=args.ppo_learning_rate,
         ppo_n_steps=args.ppo_n_steps,
         ppo_batch_size=args.ppo_batch_size,
@@ -1924,6 +2159,7 @@ def run_multitask(args: argparse.Namespace, tasks: List[str], run_dir: Path) -> 
         ppo_gamma=args.ppo_gamma,
         ppo_gae_lambda=args.ppo_gae_lambda,
         ppo_clip_range=args.ppo_clip_range,
+        ppo_clip_range_vf=args.ppo_clip_range_vf,
         ppo_ent_coef=args.ppo_ent_coef,
         ppo_vf_coef=args.ppo_vf_coef,
         ppo_max_grad_norm=args.ppo_max_grad_norm,
@@ -1998,6 +2234,9 @@ def run_multitask(args: argparse.Namespace, tasks: List[str], run_dir: Path) -> 
         "tasks_sequence": tasks,
         "unique_tasks": unique_tasks,
         "adapter_enabled": args.adapter_enabled,
+        "multi_head_enabled": bool(args.multi_head_enabled),
+        "task_conditioning": args.task_conditioning,
+        "task_emb_dim": args.task_emb_dim if args.append_task_id else None,
         "timesteps": args.total_steps,
         "elapsed_sec": elapsed,
         "avg_success_rate": float(np.mean(success_rates)) if success_rates else float("nan"),
@@ -2030,6 +2269,18 @@ def build_parser() -> argparse.ArgumentParser:
         help="Normalizar observaciones Box si tienen escala > 1.",
     )
     p.add_argument("--append-task-id", action="store_true")
+    p.add_argument(
+        "--task-conditioning",
+        choices=["ignore", "concat"],
+        default="concat",
+        help="Cómo usar task_id cuando está presente en la observación del baseline compartido.",
+    )
+    p.add_argument(
+        "--task-emb-dim",
+        type=int,
+        default=16,
+        help="Dimensión de la proyección de task_id para el baseline task-aware.",
+    )
 
     p.add_argument(
         "--adapter-enabled",
@@ -2113,21 +2364,43 @@ def build_parser() -> argparse.ArgumentParser:
         default=False,
         help="Tras warm-up, entrenar troncal de valor compartida (menos aislamiento CL).",
     )
+    p.add_argument(
+        "--multi-head-enabled",
+        dest="multi_head_enabled",
+        action=argparse.BooleanOptionalAction,
+        default=None,
+        help=(
+            "Instalar heads por tarea en la salida de policy/value. "
+            "Si no se especifica, se activa automáticamente cuando hay adapters."
+        ),
+    )
+    p.add_argument(
+        "--multi-head-warmup-tasks",
+        type=int,
+        default=1,
+        help="Número de tareas entrenadas con head compartido antes de instalar multi-head.",
+    )
 
-    p.add_argument("--ppo-learning-rate", type=float, default=3e-4)
-    p.add_argument("--ppo-n-steps", type=int, default=2048)
-    p.add_argument("--ppo-batch-size", type=int, default=256)
-    p.add_argument("--ppo-n-epochs", type=int, default=10)
+    p.add_argument("--ppo-learning-rate", type=float, default=1e-4)
+    p.add_argument("--ppo-n-steps", type=int, default=4096)
+    p.add_argument("--ppo-batch-size", type=int, default=512)
+    p.add_argument("--ppo-n-epochs", type=int, default=4)
     p.add_argument("--ppo-gamma", type=float, default=0.99)
     p.add_argument("--ppo-gae-lambda", type=float, default=0.95)
-    p.add_argument("--ppo-clip-range", type=float, default=0.2)
-    p.add_argument("--ppo-ent-coef", type=float, default=0.001)
+    p.add_argument("--ppo-clip-range", type=float, default=0.1)
+    p.add_argument(
+        "--ppo-clip-range-vf",
+        type=float,
+        default=0.1,
+        help="Clipping para la función de valor en PPO (None/negativo para desactivar).",
+    )
+    p.add_argument("--ppo-ent-coef", type=float, default=0.005)
     p.add_argument("--ppo-vf-coef", type=float, default=0.5)
     p.add_argument("--ppo-max-grad-norm", type=float, default=0.5)
     p.add_argument(
         "--ppo-target-kl",
         type=float,
-        default=0.03,
+        default=0.01,
         help="Early stop por KL objetivo en PPO (None/0 para desactivar).",
     )
 
@@ -2177,6 +2450,12 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
     args = build_parser().parse_args(argv)
     _ensure_minigrid()
 
+    if args.multi_head_enabled is None:
+        args.multi_head_enabled = bool(args.adapter_enabled)
+    if args.mode == "multitask" and args.multi_head_enabled:
+        print("[WARN] --multi-head-enabled se desactiva en modo multitask.")
+        args.multi_head_enabled = False
+
     if args.adapter_enabled and not args.append_task_id:
         raise ValueError("Con --adapter-enabled debes activar --append-task-id para routing por tarea.")
     if args.adapter_rank <= 0:
@@ -2189,6 +2468,10 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
         raise ValueError("--ppo-batch-size debe ser > 0.")
     if args.ppo_n_epochs <= 0:
         raise ValueError("--ppo-n-epochs debe ser > 0.")
+    if args.task_emb_dim <= 0:
+        raise ValueError("--task-emb-dim debe ser > 0.")
+    if args.multi_head_warmup_tasks < 0:
+        raise ValueError("--multi-head-warmup-tasks no puede ser negativo.")
     if args.max_episode_steps <= 0:
         raise ValueError("--max-episode-steps debe ser > 0.")
     if args.action_window_size <= 0:
@@ -2197,12 +2480,22 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
         raise ValueError("--ppo-target-kl no puede ser negativo.")
     if args.ppo_target_kl == 0:
         args.ppo_target_kl = None
+    if args.ppo_clip_range_vf is not None and args.ppo_clip_range_vf < 0:
+        args.ppo_clip_range_vf = None
 
     if args.ppo_batch_size > args.ppo_n_steps:
         print(
             "[WARN] --ppo-batch-size es mayor que --ppo-n-steps en n_env=1; "
             "SB3 lo maneja pero puede degradar entrenamiento."
         )
+    if args.task_conditioning == "concat" and not args.append_task_id:
+        print("[WARN] task_conditioning=concat no tendrá efecto sin --append-task-id.")
+    if args.adapter_enabled and args.multi_head_enabled and args.multi_head_warmup_tasks < args.adapter_warmup_tasks:
+        print(
+            "[INFO] Ajustando multi_head_warmup_tasks al warm-up de adapters para evitar "
+            "instalación temprana de multi-head."
+        )
+        args.multi_head_warmup_tasks = int(args.adapter_warmup_tasks)
 
     _set_seed(args.seed)
 
