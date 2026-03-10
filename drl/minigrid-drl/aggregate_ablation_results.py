@@ -135,9 +135,21 @@ def summarize_tb_scalars(df: pd.DataFrame) -> Dict[str, Any]:
     return out
 
 
-def summarize_eval_metrics(df: pd.DataFrame) -> Dict[str, Any]:
+def summarize_eval_metrics(
+    df: pd.DataFrame,
+    primary_eval_seed_offset: Optional[int] = None,
+    primary_eval_policy_mode: Optional[str] = None,
+) -> Dict[str, Any]:
     if df.empty:
         return {}
+    if primary_eval_policy_mode is not None and "eval_policy_mode" in df.columns:
+        df = df[df["eval_policy_mode"] == primary_eval_policy_mode].copy()
+        if df.empty:
+            return {}
+    if primary_eval_seed_offset is not None and "eval_seed_offset" in df.columns:
+        df = df[df["eval_seed_offset"] == primary_eval_seed_offset].copy()
+        if df.empty:
+            return {}
     out: Dict[str, Any] = {
         "eval_rows": int(len(df)),
         "num_phases": int(df["phase"].max()) if "phase" in df else 0,
@@ -292,10 +304,22 @@ def discover_run_record(run_dir: Path, manifest_row: Optional[pd.Series] = None)
         "task_preset": summary.get("task_preset", args.get("task_preset")),
         "mode": summary.get("mode", args.get("mode")),
         "obs_mode": summary.get("obs_mode", args.get("obs_mode")),
+        "fully_observable": bool(summary.get("fully_observable", args.get("fully_observable", False))),
+        "n_envs": safe_int(summary.get("n_envs", args.get("n_envs", 1)), default=1),
+        "vec_env": str(summary.get("vec_env", args.get("vec_env", "dummy"))),
         "append_task_id": bool(args.get("append_task_id", False)),
         "task_conditioning": str(args.get("task_conditioning", "ignore")),
         "adapter_enabled": bool(summary.get("adapter_enabled", args.get("adapter_enabled", False))),
         "multi_head_enabled": bool(summary.get("multi_head_enabled", args.get("multi_head_enabled", False))),
+        "eval_seed_offsets_csv": ",".join(str(x) for x in summary.get("eval_seed_offsets", [])),
+        "eval_policy_modes_csv": ",".join(str(x) for x in summary.get("eval_policy_modes", [])),
+        "summary_eval_policy_mode": str(
+            summary.get("summary_eval_policy_mode", "deterministic")
+        ),
+        "summary_eval_seed_offset": safe_int(
+            summary.get("summary_eval_seed_offset", args.get("summary_eval_seed_offset", 1000)),
+            default=1000,
+        ),
         "adapter_rank": args.get("adapter_rank"),
         "adapter_alpha": args.get("adapter_alpha"),
         "adapter_warmup_tasks": args.get("adapter_warmup_tasks"),
@@ -323,7 +347,13 @@ def discover_run_record(run_dir: Path, manifest_row: Optional[pd.Series] = None)
     train_df = read_optional_csv(run_dir / "train_metrics.csv")
     tb_df = read_optional_csv(run_dir / "tb_scalars_export.csv")
 
-    record.update(summarize_eval_metrics(eval_df))
+    record.update(
+        summarize_eval_metrics(
+            eval_df,
+            primary_eval_seed_offset=record["summary_eval_seed_offset"],
+            primary_eval_policy_mode=record["summary_eval_policy_mode"],
+        )
+    )
     record.update(summarize_train_metrics(train_df))
     record.update(summarize_tb_scalars(tb_df))
     record["warning_flags"] = build_warning_flags(record)

@@ -24,6 +24,7 @@ from stable_baselines3.common.base_class import BaseAlgorithm
 from stable_baselines3.common.callbacks import BaseCallback
 from stable_baselines3.common.monitor import Monitor
 from stable_baselines3.common.torch_layers import BaseFeaturesExtractor
+from stable_baselines3.common.vec_env import DummyVecEnv, SubprocVecEnv, VecEnv, VecMonitor
 
 matplotlib.use("Agg")
 import matplotlib.pyplot as plt  # noqa: E402
@@ -46,11 +47,11 @@ PREFERRED_MINIGRID_SMOKE4: List[str] = [
     "MiniGrid-Unlock-v0"
 ]
 
-PREFERRED_MINIGRID_SMOKE4_2: List[str] = [
-    "MiniGrid-DoorKey-9x9-v0",
-    "MiniGrid-SimpleCrossingS9N1-v0",
-    "MiniGrid-LavaCrossingS9N1-v0",
-    "MiniGrid-Unlock-v0"
+PREFERRED_MINIGRID_SMOKE4_EASY_FULLOBS: List[str] = [
+    "MiniGrid-Empty-5x5-v0",
+    "MiniGrid-DoorKey-5x5-v0",
+    "MiniGrid-LavaGapS5-v0",
+    "MiniGrid-GoToDoor-5x5-v0",
 ]
 
 PREFERRED_MINIGRID_CW10: List[str] = [
@@ -172,9 +173,9 @@ def resolve_task_sequence(
         return tasks
 
     preset = task_preset.lower().strip()
-    if preset not in {"smoke4", "cw10", "cw20", "all"}:
+    if preset not in {"smoke4", "smoke4_easy_fullobs", "cw10", "cw20", "all"}:
         raise ValueError(
-            "`--task-preset` inválido. Usa smoke4/cw10/cw20/all o define --tasks."
+            "`--task-preset` inválido. Usa smoke4/smoke4_easy_fullobs/cw10/cw20/all o define --tasks."
         )
     if preset == "all":
         return list(available)
@@ -188,6 +189,15 @@ def resolve_task_sequence(
             )
         return _fill_from_available(PREFERRED_MINIGRID_SMOKE4, available, target)
 
+    if preset == "smoke4_easy_fullobs":
+        target = min(4, len(available))
+        if target < 4:
+            print(
+                f"[WARN] Solo hay {len(available)} tareas registradas; "
+                "smoke4_easy_fullobs se reducirá automáticamente."
+            )
+        return _fill_from_available(PREFERRED_MINIGRID_SMOKE4_EASY_FULLOBS, available, target)
+
     cw10_target = min(10, len(available))
     if cw10_target < 10:
         print(
@@ -198,6 +208,35 @@ def resolve_task_sequence(
     if preset == "cw10":
         return cw10
     return cw10 + cw10
+
+
+def _preset_implies_fully_observable(task_preset: str) -> bool:
+    return task_preset.lower().strip() == "smoke4_easy_fullobs"
+
+
+def _parse_csv_ints(values_csv: str) -> List[int]:
+    values: List[int] = []
+    for raw in values_csv.split(","):
+        item = raw.strip()
+        if not item:
+            continue
+        values.append(int(item))
+    return values
+
+
+def _parse_eval_policy_modes_csv(values_csv: str) -> List[str]:
+    allowed = {"deterministic", "stochastic"}
+    values: List[str] = []
+    for raw in values_csv.split(","):
+        item = raw.strip().lower()
+        if not item:
+            continue
+        if item not in allowed:
+            raise ValueError(
+                f"Modo de evaluación inválido: {item}. Usa deterministic o stochastic."
+            )
+        values.append(item)
+    return values
 
 
 class FlattenToFloatObs(gym.ObservationWrapper):
@@ -254,6 +293,7 @@ def _make_minigrid_env(
     disable_env_checker: bool,
     obs_mode: str,
     normalize_obs: bool,
+    fully_observable: bool,
 ) -> gym.Env:
     _ensure_minigrid()
     env = gym.make(
@@ -262,7 +302,10 @@ def _make_minigrid_env(
         disable_env_checker=disable_env_checker,
     )
 
-    from minigrid.wrappers import FlatObsWrapper, ImgObsWrapper
+    from minigrid.wrappers import FlatObsWrapper, FullyObsWrapper, ImgObsWrapper
+
+    if fully_observable:
+        env = FullyObsWrapper(env)
 
     if obs_mode == "flat":
         env = FlatObsWrapper(env)
@@ -290,6 +333,7 @@ class ContinualTaskSuiteEnv(gym.Env[np.ndarray, int]):
         disable_env_checker: bool = True,
         obs_mode: str = "image",
         normalize_obs: bool = True,
+        fully_observable: bool = False,
     ):
         super().__init__()
         if not task_names:
@@ -313,6 +357,7 @@ class ContinualTaskSuiteEnv(gym.Env[np.ndarray, int]):
                 disable_env_checker=disable_env_checker,
                 obs_mode=obs_mode,
                 normalize_obs=normalize_obs,
+                fully_observable=fully_observable,
             )
 
         base_env = self._envs[self.unique_tasks[0]]
@@ -466,6 +511,97 @@ def _suite_env(env: gym.Env) -> ContinualTaskSuiteEnv:
     if not isinstance(base, ContinualTaskSuiteEnv):
         raise TypeError("Env base no es ContinualTaskSuiteEnv.")
     return base
+
+
+def _suite_attr(env: gym.Env | VecEnv, attr_name: str) -> Any:
+    if isinstance(env, VecEnv):
+        return env.get_attr(attr_name)[0]
+    return getattr(_suite_env(env), attr_name)
+
+
+def _suite_set_task(env: gym.Env | VecEnv, task_name: Optional[str]) -> None:
+    if isinstance(env, VecEnv):
+        env.env_method("set_task", task_name)
+        return
+    _suite_env(env).set_task(task_name)
+
+
+def _suite_task_idx(env: gym.Env | VecEnv, task_name: str) -> int:
+    if isinstance(env, VecEnv):
+        return int(env.env_method("_task_idx", task_name)[0])
+    return int(_suite_env(env)._task_idx(task_name))
+
+
+def _build_train_env(
+    args: argparse.Namespace,
+    tasks: List[str],
+    run_dir: Path,
+) -> gym.Env | VecEnv:
+    if int(args.n_envs) <= 1:
+        return Monitor(
+            ContinualTaskSuiteEnv(
+                task_names=tasks,
+                seed=args.seed,
+                max_episode_steps=args.max_episode_steps,
+                append_task_id=args.append_task_id,
+                render_mode=None,
+                disable_env_checker=args.disable_env_checker,
+                obs_mode=args.obs_mode,
+                normalize_obs=args.normalize_obs,
+                fully_observable=args.fully_observable,
+            ),
+            filename=str(run_dir / "train.monitor.csv"),
+            info_keywords=("task_name", "task_idx", "is_success"),
+        )
+
+    def make_env(rank: int):
+        def _init() -> ContinualTaskSuiteEnv:
+            return ContinualTaskSuiteEnv(
+                task_names=tasks,
+                seed=args.seed + rank * 10_000,
+                max_episode_steps=args.max_episode_steps,
+                append_task_id=args.append_task_id,
+                render_mode=None,
+                disable_env_checker=args.disable_env_checker,
+                obs_mode=args.obs_mode,
+                normalize_obs=args.normalize_obs,
+                fully_observable=args.fully_observable,
+            )
+
+        return _init
+
+    env_fns = [make_env(rank) for rank in range(int(args.n_envs))]
+    vec_cls = SubprocVecEnv if args.vec_env == "subproc" else DummyVecEnv
+    vec_env = vec_cls(env_fns)
+    return VecMonitor(
+        vec_env,
+        filename=str(run_dir / "train.monitor.csv"),
+        info_keywords=("task_name", "task_idx", "is_success"),
+    )
+
+
+def _build_eval_env(
+    args: argparse.Namespace,
+    tasks: List[str],
+    seed_offset: int,
+    run_dir: Path,
+) -> gym.Env:
+    monitor_name = "eval.monitor.csv" if seed_offset == int(args.summary_eval_seed_offset) else f"eval_offset_{seed_offset}.monitor.csv"
+    return Monitor(
+        ContinualTaskSuiteEnv(
+            task_names=tasks,
+            seed=args.seed + seed_offset,
+            max_episode_steps=args.max_episode_steps,
+            append_task_id=args.append_task_id,
+            render_mode=None,
+            disable_env_checker=args.disable_env_checker,
+            obs_mode=args.obs_mode,
+            normalize_obs=args.normalize_obs,
+            fully_observable=args.fully_observable,
+        ),
+        filename=str(run_dir / monitor_name),
+        info_keywords=("task_name", "task_idx", "is_success"),
+    )
 
 
 class LowRankAdapter(nn.Module):
@@ -1194,8 +1330,7 @@ def _build_model(
     ppo_max_grad_norm: float,
     ppo_target_kl: Optional[float],
 ) -> BaseAlgorithm:
-    suite = _suite_env(env)
-    state_source_shape = getattr(suite, "state_source_shape", None)
+    state_source_shape = _suite_attr(env, "state_source_shape")
     use_cnn = bool(obs_mode == "image" and state_source_shape is not None and len(state_source_shape) == 3)
     if obs_mode == "image" and not use_cnn:
         print(
@@ -1203,7 +1338,7 @@ def _build_model(
             "usando extractor MLP."
         )
 
-    num_tasks_in_obs = adapter_num_tasks if bool(getattr(suite, "append_task_id", False)) else 0
+    num_tasks_in_obs = adapter_num_tasks if bool(_suite_attr(env, "append_task_id")) else 0
     use_task_conditioning = bool(num_tasks_in_obs > 0 and task_conditioning == "concat")
 
     if adapter_enabled:
@@ -1338,6 +1473,8 @@ class EvalRecord:
     phase: int
     trained_task: str
     eval_task: str
+    eval_policy_mode: str
+    eval_seed_offset: int
     timesteps: int
     mean_return: float
     success_rate: float
@@ -1360,6 +1497,17 @@ class HealthPlotCheckpointCallback(BaseCallback):
         action_component_idx: int = 0,
         action_window_size: int = 50_000,
         action_hist_bins: int = 31,
+        periodic_eval_env: Optional[gym.Env] = None,
+        periodic_eval_freq: int = 0,
+        periodic_eval_episodes: int = 10,
+        periodic_eval_deterministic: bool = True,
+        periodic_eval_policy_mode: str = "deterministic",
+        periodic_eval_seed_offset: int = 0,
+        periodic_eval_scope: str = "active_task",
+        periodic_eval_task_names: Optional[Sequence[str]] = None,
+        save_best_eval_checkpoint: bool = False,
+        early_stop_eval_success_threshold: Optional[float] = None,
+        early_stop_eval_patience: int = 1,
         verbose: int = 1,
     ):
         super().__init__(verbose=verbose)
@@ -1374,18 +1522,37 @@ class HealthPlotCheckpointCallback(BaseCallback):
         self.action_component_idx = int(action_component_idx)
         self.action_window_size = max(1, int(action_window_size))
         self.action_hist_bins = max(3, int(action_hist_bins))
+        self.periodic_eval_env = periodic_eval_env
+        self.periodic_eval_freq = max(0, int(periodic_eval_freq))
+        self.periodic_eval_episodes = max(1, int(periodic_eval_episodes))
+        self.periodic_eval_deterministic = bool(periodic_eval_deterministic)
+        self.periodic_eval_policy_mode = str(periodic_eval_policy_mode)
+        self.periodic_eval_seed_offset = int(periodic_eval_seed_offset)
+        self.periodic_eval_scope = str(periodic_eval_scope).strip().lower()
+        self.periodic_eval_task_names = list(
+            dict.fromkeys(str(task).strip() for task in (periodic_eval_task_names or []) if str(task).strip())
+        )
+        self.save_best_eval_checkpoint = bool(save_best_eval_checkpoint)
+        self.early_stop_eval_success_threshold = (
+            None
+            if early_stop_eval_success_threshold is None
+            else float(early_stop_eval_success_threshold)
+        )
+        self.early_stop_eval_patience = max(1, int(early_stop_eval_patience))
 
         self.action_mean_key = "action_mean"
         self.action_std_key = "action_std"
         self.action_prob_keys: List[str] = []
 
         self.csv_path = self.run_dir / "train_metrics.csv"
+        self.periodic_eval_csv_path = self.run_dir / "periodic_eval_metrics.csv"
         self.plot_dir = self.run_dir / "plots"
         self.ckpt_dir = self.run_dir / "checkpoints"
 
         self.last_health_step = 0
         self.last_plot_step = 0
         self.last_ckpt_step = 0
+        self.last_periodic_eval_step = 0
 
         self.ts: List[int] = []
         self.mean_returns: List[float] = []
@@ -1400,7 +1567,16 @@ class HealthPlotCheckpointCallback(BaseCallback):
         self._running_ep_success: Dict[int, float] = {}
         self._action_values: deque[float] = deque(maxlen=self.action_window_size)
         self._action_discrete_values: deque[int] = deque(maxlen=self.action_window_size)
+        self.current_phase_idx = 0
+        self._manual_active_task_name: Optional[str] = None
         self.best_score = -float("inf")
+        self.best_periodic_eval_score = -float("inf")
+        self.best_periodic_eval_path: Optional[Path] = None
+        self.best_periodic_eval_stats: Optional[Dict[str, float]] = None
+        self.best_periodic_eval_task: Optional[str] = None
+        self.best_periodic_eval_task_names: List[str] = list(self.periodic_eval_task_names)
+        self._periodic_eval_threshold_hits = 0
+        self.stopped_early_on_periodic_eval = False
         self.t0 = time.time()
 
     def _csv_fieldnames(self) -> List[str]:
@@ -1429,8 +1605,67 @@ class HealthPlotCheckpointCallback(BaseCallback):
                     fieldnames=self._csv_fieldnames(),
                 )
                 writer.writeheader()
+        if self.periodic_eval_env is not None and self.periodic_eval_freq > 0 and not self.periodic_eval_csv_path.exists():
+            with self.periodic_eval_csv_path.open("w", newline="", encoding="utf-8") as fh:
+                writer = csv.DictWriter(
+                    fh,
+                    fieldnames=[
+                        "phase",
+                        "timesteps",
+                        "elapsed_sec",
+                        "active_task",
+                        "eval_scope",
+                        "task_name",
+                        "task_names_csv",
+                        "task_count",
+                        "eval_policy_mode",
+                        "eval_seed_offset",
+                        "eval_episodes",
+                        "mean_return",
+                        "success_rate",
+                        "mean_ep_len",
+                        "is_best",
+                        "threshold_met",
+                    ],
+                )
+                writer.writeheader()
+
+    def _reset_periodic_eval_tracking(self) -> None:
+        self.last_periodic_eval_step = int(getattr(self, "num_timesteps", 0))
+        self.best_periodic_eval_score = -float("inf")
+        self.best_periodic_eval_path = None
+        self.best_periodic_eval_stats = None
+        self.best_periodic_eval_task = None
+        self.best_periodic_eval_task_names = list(self.periodic_eval_task_names)
+        self._periodic_eval_threshold_hits = 0
+        self.stopped_early_on_periodic_eval = False
+
+    def start_phase(
+        self,
+        phase_idx: int,
+        active_task_name: Optional[str],
+        periodic_eval_task_names: Optional[Sequence[str]] = None,
+        reset_periodic_eval_tracking: bool = False,
+    ) -> None:
+        self.current_phase_idx = int(phase_idx)
+        self._manual_active_task_name = (
+            None if active_task_name is None else str(active_task_name)
+        )
+        if periodic_eval_task_names is not None:
+            self.periodic_eval_task_names = list(
+                dict.fromkeys(
+                    str(task).strip()
+                    for task in periodic_eval_task_names
+                    if str(task).strip()
+                )
+            )
+            reset_periodic_eval_tracking = True
+        if reset_periodic_eval_tracking:
+            self._reset_periodic_eval_tracking()
 
     def _active_task_name(self) -> str:
+        if self._manual_active_task_name:
+            return self._manual_active_task_name
         try:
             task = self.training_env.get_attr("_active_task")[0]
             if task is None:
@@ -1601,6 +1836,202 @@ class HealthPlotCheckpointCallback(BaseCallback):
                     f"{self.improvement_metric}={score:.4f} -> {best_step.name}.zip"
                 )
 
+    @staticmethod
+    def _aggregate_eval_stats(
+        task_stats: Dict[str, Dict[str, float]],
+    ) -> Dict[str, float]:
+        if not task_stats:
+            return {
+                "mean_return": float("nan"),
+                "success_rate": float("nan"),
+                "mean_ep_len": float("nan"),
+            }
+
+        def _mean(key: str) -> float:
+            values = [
+                float(stats.get(key, float("nan")))
+                for stats in task_stats.values()
+                if not math.isnan(float(stats.get(key, float("nan"))))
+            ]
+            if not values:
+                return float("nan")
+            return float(np.mean(values))
+
+        return {
+            "mean_return": _mean("mean_return"),
+            "success_rate": _mean("success_rate"),
+            "mean_ep_len": _mean("mean_ep_len"),
+        }
+
+    def _run_periodic_eval(self) -> bool:
+        if self.periodic_eval_env is None or self.periodic_eval_freq <= 0:
+            return True
+        if (self.num_timesteps - self.last_periodic_eval_step) < self.periodic_eval_freq:
+            return True
+        self.last_periodic_eval_step = self.num_timesteps
+
+        active_task_name = self._active_task_name()
+        if not active_task_name or active_task_name == "?":
+            return True
+
+        if self.periodic_eval_scope == "seen_tasks_mean":
+            eval_task_names = list(self.periodic_eval_task_names)
+            if not eval_task_names:
+                eval_task_names = [active_task_name]
+        else:
+            eval_task_names = [active_task_name]
+        eval_task_names = list(dict.fromkeys(eval_task_names))
+        if not eval_task_names:
+            return True
+
+        task_stats: Dict[str, Dict[str, float]] = {}
+        for task_name in eval_task_names:
+            try:
+                eval_task_idx = _suite_task_idx(self.periodic_eval_env, task_name)
+                _set_active_heads(self.model, eval_task_idx)
+            except Exception:
+                pass
+            task_stats[task_name] = evaluate_task(
+                self.model,
+                self.periodic_eval_env,
+                task_name,
+                self.periodic_eval_episodes,
+                deterministic=self.periodic_eval_deterministic,
+            )
+
+        stats = self._aggregate_eval_stats(task_stats)
+        elapsed = time.time() - self.t0
+        target_label = (
+            eval_task_names[0] if len(eval_task_names) == 1 else "__seen_tasks_mean__"
+        )
+        task_names_csv = ",".join(eval_task_names)
+
+        score = stats["success_rate"]
+        if math.isnan(score):
+            score = stats["mean_return"]
+
+        is_best = False
+        if (
+            self.save_best_eval_checkpoint
+            and not math.isnan(score)
+            and score > (self.best_periodic_eval_score + self.min_improvement_delta)
+        ):
+            self.best_periodic_eval_score = score
+            self.best_periodic_eval_stats = dict(stats)
+            self.best_periodic_eval_task = eval_task_names[0] if len(eval_task_names) == 1 else None
+            self.best_periodic_eval_task_names = list(eval_task_names)
+            self.best_periodic_eval_path = (
+                self.ckpt_dir / f"best_eval_step_{self.num_timesteps:012d}"
+            )
+            self.model.save(str(self.best_periodic_eval_path))
+            self.model.save(str(self.run_dir / "best_eval_model"))
+            is_best = True
+            if self.verbose:
+                print(
+                    f"[BEST-EVAL] t={self.num_timesteps:,} scope={self.periodic_eval_scope} "
+                    f"tasks={task_names_csv} "
+                    f"mode={self.periodic_eval_policy_mode} "
+                    f"offset={self.periodic_eval_seed_offset} "
+                    f"success={stats['success_rate']:.4f} -> best_eval_model.zip"
+                )
+
+        threshold_met = False
+        if self.early_stop_eval_success_threshold is not None and not math.isnan(stats["success_rate"]):
+            threshold_met = stats["success_rate"] >= self.early_stop_eval_success_threshold
+            if threshold_met:
+                self._periodic_eval_threshold_hits += 1
+            else:
+                self._periodic_eval_threshold_hits = 0
+
+        with self.periodic_eval_csv_path.open("a", newline="", encoding="utf-8") as fh:
+            writer = csv.DictWriter(
+                fh,
+                fieldnames=[
+                    "phase",
+                    "timesteps",
+                    "elapsed_sec",
+                    "active_task",
+                    "eval_scope",
+                    "task_name",
+                    "task_names_csv",
+                    "task_count",
+                    "eval_policy_mode",
+                    "eval_seed_offset",
+                    "eval_episodes",
+                    "mean_return",
+                    "success_rate",
+                    "mean_ep_len",
+                    "is_best",
+                    "threshold_met",
+                ],
+            )
+            writer.writerow(
+                {
+                    "phase": int(self.current_phase_idx),
+                    "timesteps": int(self.num_timesteps),
+                    "elapsed_sec": float(elapsed),
+                    "active_task": active_task_name,
+                    "eval_scope": self.periodic_eval_scope,
+                    "task_name": target_label,
+                    "task_names_csv": task_names_csv,
+                    "task_count": len(eval_task_names),
+                    "eval_policy_mode": self.periodic_eval_policy_mode,
+                    "eval_seed_offset": self.periodic_eval_seed_offset,
+                    "eval_episodes": self.periodic_eval_episodes,
+                    "mean_return": stats["mean_return"],
+                    "success_rate": stats["success_rate"],
+                    "mean_ep_len": stats["mean_ep_len"],
+                    "is_best": int(is_best),
+                    "threshold_met": int(threshold_met),
+                }
+            )
+
+        self.logger.record("eval_periodic/success_rate", float(stats["success_rate"]))
+        self.logger.record("eval_periodic/mean_return", float(stats["mean_return"]))
+        self.logger.record("eval_periodic/mean_ep_len", float(stats["mean_ep_len"]))
+        print(
+            f"[EVAL-PERIODIC] t={self.num_timesteps:,} scope={self.periodic_eval_scope} "
+            f"tasks={len(eval_task_names)} active={active_task_name} "
+            f"mode={self.periodic_eval_policy_mode} offset={self.periodic_eval_seed_offset} "
+            f"ret={stats['mean_return']:.2f} succ={stats['success_rate']:.3f} "
+            f"len={stats['mean_ep_len']:.1f}"
+        )
+
+        if (
+            threshold_met
+            and self._periodic_eval_threshold_hits >= self.early_stop_eval_patience
+        ):
+            self.stopped_early_on_periodic_eval = True
+            print(
+                f"[EARLY-STOP] t={self.num_timesteps:,} scope={self.periodic_eval_scope} "
+                f"tasks={task_names_csv} "
+                f"success={stats['success_rate']:.3f} "
+                f"threshold={self.early_stop_eval_success_threshold:.3f} "
+                f"patience={self.early_stop_eval_patience}"
+            )
+            return False
+        return True
+
+    def periodic_eval_metadata(self) -> Dict[str, Any]:
+        path_str: Optional[str] = None
+        if self.best_periodic_eval_path is not None:
+            path_str = f"{self.best_periodic_eval_path}.zip"
+        return {
+            "best_periodic_eval_score": self.best_periodic_eval_score
+            if self.best_periodic_eval_score > -float("inf")
+            else float("nan"),
+            "best_periodic_eval_task": self.best_periodic_eval_task,
+            "best_periodic_eval_task_names": list(self.best_periodic_eval_task_names),
+            "best_periodic_eval_path": path_str,
+            "stopped_early_on_periodic_eval": bool(self.stopped_early_on_periodic_eval),
+            "periodic_eval_scope": self.periodic_eval_scope,
+            "periodic_eval_task_names": list(self.periodic_eval_task_names),
+            "periodic_eval_policy_mode": self.periodic_eval_policy_mode,
+            "periodic_eval_seed_offset": self.periodic_eval_seed_offset,
+            "periodic_eval_freq": int(self.periodic_eval_freq),
+            "periodic_eval_episodes": int(self.periodic_eval_episodes),
+        }
+
     def reset_task_window(self, model: Optional[BaseAlgorithm] = None) -> None:
         self._successes.clear()
         self._running_ep_success.clear()
@@ -1687,7 +2118,25 @@ class HealthPlotCheckpointCallback(BaseCallback):
             self._plot_metrics()
             self._plot_action_hist()
 
-        return True
+        return self._run_periodic_eval()
+
+
+def _maybe_restore_best_periodic_eval_model(
+    model: BaseAlgorithm,
+    callback: HealthPlotCheckpointCallback,
+    restore_enabled: bool,
+) -> bool:
+    if not restore_enabled:
+        return False
+    best_path = callback.best_periodic_eval_path
+    if best_path is None:
+        return False
+    best_zip = Path(f"{best_path}.zip")
+    if not best_zip.exists():
+        return False
+    model.set_parameters(str(best_zip), exact_match=True, device="auto")
+    print(f"[RESTORE-BEST-EVAL] Restored parameters from {best_zip.name}")
+    return True
 
 
 def _write_eval_records(csv_path: Path, rows: Iterable[EvalRecord]) -> None:
@@ -1700,6 +2149,8 @@ def _write_eval_records(csv_path: Path, rows: Iterable[EvalRecord]) -> None:
                 "phase",
                 "trained_task",
                 "eval_task",
+                "eval_policy_mode",
+                "eval_seed_offset",
                 "timesteps",
                 "mean_return",
                 "success_rate",
@@ -1714,6 +2165,8 @@ def _write_eval_records(csv_path: Path, rows: Iterable[EvalRecord]) -> None:
                     "phase": r.phase,
                     "trained_task": r.trained_task,
                     "eval_task": r.eval_task,
+                    "eval_policy_mode": r.eval_policy_mode,
+                    "eval_seed_offset": r.eval_seed_offset,
                     "timesteps": r.timesteps,
                     "mean_return": r.mean_return,
                     "success_rate": r.success_rate,
@@ -1894,35 +2347,11 @@ def _phase_success_matrix(
 
 def run_continual(args: argparse.Namespace, tasks: List[str], run_dir: Path) -> Dict[str, Any]:
     unique_tasks = list(dict.fromkeys(tasks))
-
-    train_env = Monitor(
-        ContinualTaskSuiteEnv(
-            task_names=tasks,
-            seed=args.seed,
-            max_episode_steps=args.max_episode_steps,
-            append_task_id=args.append_task_id,
-            render_mode=None,
-            disable_env_checker=args.disable_env_checker,
-            obs_mode=args.obs_mode,
-            normalize_obs=args.normalize_obs,
-        ),
-        filename=str(run_dir / "train.monitor.csv"),
-        info_keywords=("task_name", "task_idx", "is_success"),
-    )
-    eval_env = Monitor(
-        ContinualTaskSuiteEnv(
-            task_names=tasks,
-            seed=args.seed + 1_000,
-            max_episode_steps=args.max_episode_steps,
-            append_task_id=args.append_task_id,
-            render_mode=None,
-            disable_env_checker=args.disable_env_checker,
-            obs_mode=args.obs_mode,
-            normalize_obs=args.normalize_obs,
-        ),
-        filename=str(run_dir / "eval.monitor.csv"),
-        info_keywords=("task_name", "task_idx", "is_success"),
-    )
+    train_env = _build_train_env(args, tasks, run_dir)
+    eval_envs = {
+        offset: _build_eval_env(args, tasks, offset, run_dir)
+        for offset in args.eval_seed_offsets
+    }
 
     if args.adapter_enabled and not args.append_task_id:
         raise RuntimeError("Con --adapter-enabled debes usar --append-task-id para routing por tarea.")
@@ -1966,6 +2395,16 @@ def run_continual(args: argparse.Namespace, tasks: List[str], run_dir: Path) -> 
         action_component_idx=args.action_component_idx,
         action_window_size=args.action_window_size,
         action_hist_bins=args.action_hist_bins,
+        periodic_eval_env=eval_envs[args.summary_eval_seed_offset],
+        periodic_eval_freq=args.periodic_eval_freq,
+        periodic_eval_episodes=args.eval_episodes,
+        periodic_eval_deterministic=args.summary_eval_policy_mode == "deterministic",
+        periodic_eval_policy_mode=args.summary_eval_policy_mode,
+        periodic_eval_seed_offset=args.summary_eval_seed_offset,
+        periodic_eval_scope=args.periodic_eval_scope,
+        save_best_eval_checkpoint=args.save_best_eval_checkpoint,
+        early_stop_eval_success_threshold=args.early_stop_eval_success_threshold,
+        early_stop_eval_patience=args.early_stop_eval_patience,
         verbose=1,
     )
 
@@ -1974,7 +2413,10 @@ def run_continual(args: argparse.Namespace, tasks: List[str], run_dir: Path) -> 
     if args.adapter_enabled:
         multi_head_warmup_tasks = max(multi_head_warmup_tasks, int(args.adapter_warmup_tasks))
 
-    eval_history: List[Dict[str, Dict[str, float]]] = []
+    eval_histories: Dict[str, Dict[int, List[Dict[str, Dict[str, float]]]]] = {
+        mode: {offset: [] for offset in args.eval_seed_offsets}
+        for mode in args.eval_policy_modes
+    }
     total_steps = 0
     t0 = time.time()
 
@@ -1987,8 +2429,18 @@ def run_continual(args: argparse.Namespace, tasks: List[str], run_dir: Path) -> 
         if args.multi_head_enabled and not multi_heads_installed and phase > multi_head_warmup_tasks:
             _install_multi_heads(model, num_tasks=len(unique_tasks))
             multi_heads_installed = True
-        _suite_env(train_env).set_task(task)
-        task_idx = _suite_env(train_env)._task_idx(task)
+        _suite_set_task(train_env, task)
+        task_idx = _suite_task_idx(train_env, task)
+        seen_tasks = list(dict.fromkeys(tasks[:phase]))
+        periodic_eval_tasks = (
+            seen_tasks if args.periodic_eval_scope == "seen_tasks_mean" else [task]
+        )
+        health_cb.start_phase(
+            phase_idx=phase,
+            active_task_name=task,
+            periodic_eval_task_names=periodic_eval_tasks,
+            reset_periodic_eval_tracking=args.periodic_eval_freq > 0,
+        )
         if multi_heads_installed:
             _set_active_heads(model, task_idx)
         if args.reset_metric_windows_every_task:
@@ -2015,47 +2467,62 @@ def run_continual(args: argparse.Namespace, tasks: List[str], run_dir: Path) -> 
             if reset_optimizers:
                 print(f"[OPT] phase={phase} reset={','.join(reset_optimizers)}")
 
+        prev_num_timesteps = int(getattr(model, "num_timesteps", total_steps))
         model.learn(
             total_timesteps=args.steps_per_task,
             reset_num_timesteps=False,
             progress_bar=args.progress_bar,
             callback=health_cb,
         )
-        total_steps += int(args.steps_per_task)
+        total_steps += int(getattr(model, "num_timesteps", prev_num_timesteps)) - prev_num_timesteps
+        _maybe_restore_best_periodic_eval_model(
+            model=model,
+            callback=health_cb,
+            restore_enabled=args.restore_best_eval_model,
+        )
 
-        phase_result: Dict[str, Dict[str, float]] = {}
         records: List[EvalRecord] = []
-        for eval_task in unique_tasks:
-            eval_task_idx = _suite_env(eval_env)._task_idx(eval_task)
-            if multi_heads_installed:
-                _set_active_heads(model, eval_task_idx)
-            stats = evaluate_task(
-                model,
-                eval_env,
-                eval_task,
-                args.eval_episodes,
-                deterministic=args.eval_deterministic,
-            )
-            phase_result[eval_task] = stats
-            records.append(
-                EvalRecord(
-                    phase=phase,
-                    trained_task=task,
-                    eval_task=eval_task,
-                    timesteps=total_steps,
-                    mean_return=stats["mean_return"],
-                    success_rate=stats["success_rate"],
-                    mean_ep_len=stats["mean_ep_len"],
+        for eval_policy_mode in args.eval_policy_modes:
+            deterministic = eval_policy_mode == "deterministic"
+            for seed_offset, eval_env in eval_envs.items():
+                phase_result: Dict[str, Dict[str, float]] = {}
+                print(
+                    f"[EVAL] phase={phase} trained_task={task} "
+                    f"eval_mode={eval_policy_mode} eval_seed_offset={seed_offset}"
                 )
-            )
-            print(
-                f"  eval={eval_task:<30} "
-                f"return={stats['mean_return']:>9.2f} "
-                f"success={stats['success_rate']:.3f}"
-            )
+                for eval_task in unique_tasks:
+                    eval_task_idx = _suite_task_idx(eval_env, eval_task)
+                    if multi_heads_installed:
+                        _set_active_heads(model, eval_task_idx)
+                    stats = evaluate_task(
+                        model,
+                        eval_env,
+                        eval_task,
+                        args.eval_episodes,
+                        deterministic=deterministic,
+                    )
+                    phase_result[eval_task] = stats
+                    records.append(
+                        EvalRecord(
+                            phase=phase,
+                            trained_task=task,
+                            eval_task=eval_task,
+                            eval_policy_mode=eval_policy_mode,
+                            eval_seed_offset=seed_offset,
+                            timesteps=total_steps,
+                            mean_return=stats["mean_return"],
+                            success_rate=stats["success_rate"],
+                            mean_ep_len=stats["mean_ep_len"],
+                        )
+                    )
+                    print(
+                        f"  mode={eval_policy_mode:<13} offset={seed_offset:<5} "
+                        f"eval={eval_task:<30} return={stats['mean_return']:>9.2f} "
+                        f"success={stats['success_rate']:.3f}"
+                    )
+                eval_histories[eval_policy_mode][seed_offset].append(phase_result)
 
         _write_eval_records(run_dir / "eval_metrics.csv", records)
-        eval_history.append(phase_result)
 
         if args.save_model_each_phase:
             safe_task = task.replace("/", "_")
@@ -2064,16 +2531,30 @@ def run_continual(args: argparse.Namespace, tasks: List[str], run_dir: Path) -> 
     elapsed = time.time() - t0
     model.save(str(run_dir / "model_final"))
     train_env.close()
-    eval_env.close()
+    for eval_env in eval_envs.values():
+        eval_env.close()
 
+    primary_eval_history = eval_histories[args.summary_eval_policy_mode][
+        args.summary_eval_seed_offset
+    ]
     final_successes = [
-        eval_history[-1][t]["success_rate"] for t in unique_tasks if t in eval_history[-1]
+        primary_eval_history[-1][t]["success_rate"]
+        for t in unique_tasks
+        if t in primary_eval_history[-1]
     ]
     return {
         "mode": "continual",
         "algo": "ppo",
         "obs_mode": args.obs_mode,
-        "eval_deterministic": args.eval_deterministic,
+        "fully_observable": args.fully_observable,
+        "n_envs": int(args.n_envs),
+        "vec_env": args.vec_env,
+        "eval_deterministic": args.summary_eval_policy_mode == "deterministic",
+        "eval_policy_modes": args.eval_policy_modes,
+        "eval_seed_offsets": args.eval_seed_offsets,
+        "summary_eval_policy_mode": args.summary_eval_policy_mode,
+        "summary_eval_seed_offset": int(args.summary_eval_seed_offset),
+        "periodic_eval_scope": args.periodic_eval_scope,
         "task_preset": args.task_preset,
         "tasks_sequence": tasks,
         "unique_tasks": unique_tasks,
@@ -2098,45 +2579,38 @@ def run_continual(args: argparse.Namespace, tasks: List[str], run_dir: Path) -> 
         "reset_metric_windows_every_task": args.reset_metric_windows_every_task,
         "timesteps": total_steps,
         "elapsed_sec": elapsed,
-        "avg_diagonal_success_rate": _compute_diagonal_success(eval_history, tasks),
+        "restore_best_eval_model": bool(args.restore_best_eval_model),
+        "save_best_eval_checkpoint": bool(args.save_best_eval_checkpoint),
+        "early_stop_eval_success_threshold": args.early_stop_eval_success_threshold,
+        "early_stop_eval_patience": int(args.early_stop_eval_patience),
+        "avg_diagonal_success_rate": _compute_diagonal_success(primary_eval_history, tasks),
         "avg_final_success_rate": float(np.mean(final_successes)) if final_successes else float("nan"),
-        "avg_forgetting": _compute_forgetting(eval_history, tasks),
-        "avg_forgetting_learned_only": _compute_forgetting_learned_only(eval_history, tasks),
-        "phase_success_matrix": _phase_success_matrix(eval_history, tasks),
+        "avg_forgetting": _compute_forgetting(primary_eval_history, tasks),
+        "avg_forgetting_learned_only": _compute_forgetting_learned_only(primary_eval_history, tasks),
+        "phase_success_matrix": _phase_success_matrix(primary_eval_history, tasks),
+        "phase_success_matrix_by_eval_mode_and_offset": {
+            mode: {
+                str(offset): _phase_success_matrix(history, tasks)
+                for offset, history in mode_histories.items()
+            }
+            for mode, mode_histories in eval_histories.items()
+        },
+        "phase_success_matrix_by_eval_offset": {
+            str(offset): _phase_success_matrix(history, tasks)
+            for offset, history in eval_histories[args.summary_eval_policy_mode].items()
+        },
+        "periodic_eval": health_cb.periodic_eval_metadata(),
     }
 
 
 def run_multitask(args: argparse.Namespace, tasks: List[str], run_dir: Path) -> Dict[str, Any]:
-    train_env = Monitor(
-        ContinualTaskSuiteEnv(
-            task_names=tasks,
-            seed=args.seed,
-            max_episode_steps=args.max_episode_steps,
-            append_task_id=args.append_task_id,
-            render_mode=None,
-            disable_env_checker=args.disable_env_checker,
-            obs_mode=args.obs_mode,
-            normalize_obs=args.normalize_obs,
-        ),
-        filename=str(run_dir / "train.monitor.csv"),
-        info_keywords=("task_name", "task_idx", "is_success"),
-    )
-    _suite_env(train_env).set_task(None)
-
-    eval_env = Monitor(
-        ContinualTaskSuiteEnv(
-            task_names=tasks,
-            seed=args.seed + 1_000,
-            max_episode_steps=args.max_episode_steps,
-            append_task_id=args.append_task_id,
-            render_mode=None,
-            disable_env_checker=args.disable_env_checker,
-            obs_mode=args.obs_mode,
-            normalize_obs=args.normalize_obs,
-        ),
-        filename=str(run_dir / "eval.monitor.csv"),
-        info_keywords=("task_name", "task_idx", "is_success"),
-    )
+    unique_tasks = list(dict.fromkeys(tasks))
+    train_env = _build_train_env(args, tasks, run_dir)
+    _suite_set_task(train_env, None)
+    eval_envs = {
+        offset: _build_eval_env(args, tasks, offset, run_dir)
+        for offset in args.eval_seed_offsets
+    }
 
     model = _build_model(
         env=train_env,
@@ -2145,7 +2619,7 @@ def run_multitask(args: argparse.Namespace, tasks: List[str], run_dir: Path) -> 
         tensorboard_dir=run_dir / "tb",
         obs_mode=args.obs_mode,
         adapter_enabled=args.adapter_enabled,
-        adapter_num_tasks=len(list(dict.fromkeys(tasks))),
+        adapter_num_tasks=len(unique_tasks),
         adapter_rank=args.adapter_rank,
         adapter_alpha=args.adapter_alpha,
         adapter_features_dim=args.adapter_features_dim,
@@ -2177,59 +2651,106 @@ def run_multitask(args: argparse.Namespace, tasks: List[str], run_dir: Path) -> 
         action_component_idx=args.action_component_idx,
         action_window_size=args.action_window_size,
         action_hist_bins=args.action_hist_bins,
+        periodic_eval_env=eval_envs[args.summary_eval_seed_offset],
+        periodic_eval_freq=args.periodic_eval_freq,
+        periodic_eval_episodes=args.eval_episodes,
+        periodic_eval_deterministic=args.summary_eval_policy_mode == "deterministic",
+        periodic_eval_policy_mode=args.summary_eval_policy_mode,
+        periodic_eval_seed_offset=args.summary_eval_seed_offset,
+        periodic_eval_scope=args.periodic_eval_scope,
+        save_best_eval_checkpoint=args.save_best_eval_checkpoint,
+        early_stop_eval_success_threshold=args.early_stop_eval_success_threshold,
+        early_stop_eval_patience=args.early_stop_eval_patience,
         verbose=1,
     )
 
     t0 = time.time()
+    health_cb.start_phase(
+        phase_idx=1,
+        active_task_name=None,
+        periodic_eval_task_names=unique_tasks if args.periodic_eval_scope == "seen_tasks_mean" else None,
+        reset_periodic_eval_tracking=args.periodic_eval_freq > 0,
+    )
+    prev_num_timesteps = int(getattr(model, "num_timesteps", 0))
     model.learn(
         total_timesteps=args.total_steps,
         progress_bar=args.progress_bar,
         callback=health_cb,
     )
+    actual_total_timesteps = int(getattr(model, "num_timesteps", prev_num_timesteps))
+    _maybe_restore_best_periodic_eval_model(
+        model=model,
+        callback=health_cb,
+        restore_enabled=args.restore_best_eval_model,
+    )
     elapsed = time.time() - t0
 
-    unique_tasks = list(dict.fromkeys(tasks))
     rows: List[EvalRecord] = []
-    summary: Dict[str, Dict[str, float]] = {}
-    for task in unique_tasks:
-        task_idx = _suite_env(eval_env)._task_idx(task)
-        _set_active_heads(model, task_idx)
-        stats = evaluate_task(
-            model,
-            eval_env,
-            task,
-            args.eval_episodes,
-            deterministic=args.eval_deterministic,
-        )
-        summary[task] = stats
-        rows.append(
-            EvalRecord(
-                phase=1,
-                trained_task="MULTITASK",
-                eval_task=task,
-                timesteps=args.total_steps,
-                mean_return=stats["mean_return"],
-                success_rate=stats["success_rate"],
-                mean_ep_len=stats["mean_ep_len"],
+    summary_by_mode_and_offset: Dict[str, Dict[int, Dict[str, Dict[str, float]]]] = {
+        mode: {} for mode in args.eval_policy_modes
+    }
+    for eval_policy_mode in args.eval_policy_modes:
+        deterministic = eval_policy_mode == "deterministic"
+        for seed_offset, eval_env in eval_envs.items():
+            offset_summary: Dict[str, Dict[str, float]] = {}
+            print(
+                f"[EVAL] multitask eval_mode={eval_policy_mode} "
+                f"eval_seed_offset={seed_offset}"
             )
-        )
-        print(
-            f"  eval={task:<30} "
-            f"return={stats['mean_return']:>9.2f} "
-            f"success={stats['success_rate']:.3f}"
-        )
+            for task in unique_tasks:
+                task_idx = _suite_task_idx(eval_env, task)
+                _set_active_heads(model, task_idx)
+                stats = evaluate_task(
+                    model,
+                    eval_env,
+                    task,
+                    args.eval_episodes,
+                    deterministic=deterministic,
+                )
+                offset_summary[task] = stats
+                rows.append(
+                    EvalRecord(
+                        phase=1,
+                        trained_task="MULTITASK",
+                        eval_task=task,
+                        eval_policy_mode=eval_policy_mode,
+                        eval_seed_offset=seed_offset,
+                        timesteps=actual_total_timesteps,
+                        mean_return=stats["mean_return"],
+                        success_rate=stats["success_rate"],
+                        mean_ep_len=stats["mean_ep_len"],
+                    )
+                )
+                print(
+                    f"  mode={eval_policy_mode:<13} offset={seed_offset:<5} "
+                    f"eval={task:<30} return={stats['mean_return']:>9.2f} "
+                    f"success={stats['success_rate']:.3f}"
+                )
+            summary_by_mode_and_offset[eval_policy_mode][seed_offset] = offset_summary
     _write_eval_records(run_dir / "eval_metrics.csv", rows)
 
     model.save(str(run_dir / "model_final"))
     train_env.close()
-    eval_env.close()
+    for eval_env in eval_envs.values():
+        eval_env.close()
 
-    success_rates = [v["success_rate"] for v in summary.values()]
+    primary_summary = summary_by_mode_and_offset[args.summary_eval_policy_mode][
+        args.summary_eval_seed_offset
+    ]
+    success_rates = [v["success_rate"] for v in primary_summary.values()]
     return {
         "mode": "multitask",
         "algo": "ppo",
         "obs_mode": args.obs_mode,
-        "eval_deterministic": args.eval_deterministic,
+        "fully_observable": args.fully_observable,
+        "n_envs": int(args.n_envs),
+        "vec_env": args.vec_env,
+        "eval_deterministic": args.summary_eval_policy_mode == "deterministic",
+        "eval_policy_modes": args.eval_policy_modes,
+        "eval_seed_offsets": args.eval_seed_offsets,
+        "summary_eval_policy_mode": args.summary_eval_policy_mode,
+        "summary_eval_seed_offset": int(args.summary_eval_seed_offset),
+        "periodic_eval_scope": args.periodic_eval_scope,
         "task_preset": args.task_preset,
         "tasks_sequence": tasks,
         "unique_tasks": unique_tasks,
@@ -2237,9 +2758,16 @@ def run_multitask(args: argparse.Namespace, tasks: List[str], run_dir: Path) -> 
         "multi_head_enabled": bool(args.multi_head_enabled),
         "task_conditioning": args.task_conditioning,
         "task_emb_dim": args.task_emb_dim if args.append_task_id else None,
-        "timesteps": args.total_steps,
+        "timesteps": actual_total_timesteps,
         "elapsed_sec": elapsed,
+        "restore_best_eval_model": bool(args.restore_best_eval_model),
+        "save_best_eval_checkpoint": bool(args.save_best_eval_checkpoint),
+        "early_stop_eval_success_threshold": args.early_stop_eval_success_threshold,
+        "early_stop_eval_patience": int(args.early_stop_eval_patience),
         "avg_success_rate": float(np.mean(success_rates)) if success_rates else float("nan"),
+        "eval_summary_by_offset": summary_by_mode_and_offset[args.summary_eval_policy_mode],
+        "eval_summary_by_mode_and_offset": summary_by_mode_and_offset,
+        "periodic_eval": health_cb.periodic_eval_metadata(),
     }
 
 
@@ -2257,10 +2785,76 @@ def build_parser() -> argparse.ArgumentParser:
     p.add_argument("--device", default="auto")
     p.add_argument("--obs-mode", choices=["image", "flat"], default="image")
     p.add_argument(
+        "--fully-observable",
+        action=argparse.BooleanOptionalAction,
+        default=False,
+        help="Aplicar FullyObsWrapper antes del wrapper de observación final.",
+    )
+    p.add_argument(
         "--eval-deterministic",
         action=argparse.BooleanOptionalAction,
         default=True,
-        help="Evaluación greedy (determinística). Desactiva para evaluación estocástica.",
+        help="Modo legado para evaluación única. Si usas --eval-policy-modes-csv, este flag solo sirve como fallback.",
+    )
+    p.add_argument(
+        "--eval-policy-modes-csv",
+        type=str,
+        default=None,
+        help="CSV de modos de evaluación. Opciones: deterministic,stochastic",
+    )
+    p.add_argument(
+        "--summary-eval-policy-mode",
+        type=str,
+        default=None,
+        help="Modo de evaluación usado para métricas agregadas en summary.json.",
+    )
+    p.add_argument(
+        "--eval-seed-offsets-csv",
+        type=str,
+        default="1000",
+        help="CSV de offsets de semilla para evaluación. Ej.: 0,1000",
+    )
+    p.add_argument(
+        "--summary-eval-seed-offset",
+        type=int,
+        default=1000,
+        help="Offset de evaluación usado para métricas agregadas en summary.json.",
+    )
+    p.add_argument(
+        "--periodic-eval-freq",
+        type=int,
+        default=0,
+        help="Frecuencia en timesteps para evaluación periódica durante training. 0 desactiva.",
+    )
+    p.add_argument(
+        "--periodic-eval-scope",
+        choices=["active_task", "seen_tasks_mean"],
+        default="active_task",
+        help="Qué conjunto usar para seleccionar el mejor checkpoint periódico.",
+    )
+    p.add_argument(
+        "--save-best-eval-checkpoint",
+        action=argparse.BooleanOptionalAction,
+        default=False,
+        help="Guardar y rastrear el mejor checkpoint según evaluación periódica.",
+    )
+    p.add_argument(
+        "--restore-best-eval-model",
+        action=argparse.BooleanOptionalAction,
+        default=False,
+        help="Restaurar el mejor checkpoint de evaluación periódica antes de la evaluación final de la fase.",
+    )
+    p.add_argument(
+        "--early-stop-eval-success-threshold",
+        type=float,
+        default=None,
+        help="Si se alcanza este success rate en evaluación periódica, puede detener la fase antes.",
+    )
+    p.add_argument(
+        "--early-stop-eval-patience",
+        type=int,
+        default=1,
+        help="Número de evaluaciones periódicas consecutivas por encima del threshold para detener la fase.",
     )
     p.add_argument(
         "--normalize-obs",
@@ -2385,6 +2979,8 @@ def build_parser() -> argparse.ArgumentParser:
     p.add_argument("--ppo-n-steps", type=int, default=4096)
     p.add_argument("--ppo-batch-size", type=int, default=512)
     p.add_argument("--ppo-n-epochs", type=int, default=4)
+    p.add_argument("--n-envs", type=int, default=1)
+    p.add_argument("--vec-env", choices=["dummy", "subproc"], default="dummy")
     p.add_argument("--ppo-gamma", type=float, default=0.99)
     p.add_argument("--ppo-gae-lambda", type=float, default=0.95)
     p.add_argument("--ppo-clip-range", type=float, default=0.1)
@@ -2450,6 +3046,37 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
     args = build_parser().parse_args(argv)
     _ensure_minigrid()
 
+    if _preset_implies_fully_observable(args.task_preset) and not args.fully_observable:
+        print(
+            f"[INFO] task_preset={args.task_preset} activa FullyObsWrapper automáticamente."
+        )
+        args.fully_observable = True
+
+    args.eval_seed_offsets = _parse_csv_ints(args.eval_seed_offsets_csv)
+    if not args.eval_seed_offsets:
+        raise ValueError("--eval-seed-offsets-csv no puede quedar vacío.")
+    args.eval_seed_offsets = list(dict.fromkeys(args.eval_seed_offsets))
+    if args.eval_policy_modes_csv is None:
+        fallback_mode = "deterministic" if args.eval_deterministic else "stochastic"
+        args.eval_policy_modes = [fallback_mode]
+    else:
+        args.eval_policy_modes = _parse_eval_policy_modes_csv(args.eval_policy_modes_csv)
+        if not args.eval_policy_modes:
+            raise ValueError("--eval-policy-modes-csv no puede quedar vacío.")
+        args.eval_policy_modes = list(dict.fromkeys(args.eval_policy_modes))
+    if args.summary_eval_policy_mode is None:
+        args.summary_eval_policy_mode = args.eval_policy_modes[0]
+    else:
+        args.summary_eval_policy_mode = args.summary_eval_policy_mode.strip().lower()
+        if args.summary_eval_policy_mode not in {"deterministic", "stochastic"}:
+            raise ValueError(
+                "--summary-eval-policy-mode debe ser deterministic o stochastic."
+            )
+    if args.summary_eval_policy_mode not in args.eval_policy_modes:
+        raise ValueError(
+            "--summary-eval-policy-mode debe pertenecer a --eval-policy-modes-csv."
+        )
+
     if args.multi_head_enabled is None:
         args.multi_head_enabled = bool(args.adapter_enabled)
     if args.mode == "multitask" and args.multi_head_enabled:
@@ -2468,6 +3095,8 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
         raise ValueError("--ppo-batch-size debe ser > 0.")
     if args.ppo_n_epochs <= 0:
         raise ValueError("--ppo-n-epochs debe ser > 0.")
+    if args.n_envs <= 0:
+        raise ValueError("--n-envs debe ser > 0.")
     if args.task_emb_dim <= 0:
         raise ValueError("--task-emb-dim debe ser > 0.")
     if args.multi_head_warmup_tasks < 0:
@@ -2476,16 +3105,32 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
         raise ValueError("--max-episode-steps debe ser > 0.")
     if args.action_window_size <= 0:
         raise ValueError("--action-window-size debe ser > 0.")
+    if args.periodic_eval_freq < 0:
+        raise ValueError("--periodic-eval-freq no puede ser negativo.")
+    if args.periodic_eval_scope not in {"active_task", "seen_tasks_mean"}:
+        raise ValueError("--periodic-eval-scope inválido.")
+    if args.early_stop_eval_patience <= 0:
+        raise ValueError("--early-stop-eval-patience debe ser >= 1.")
+    if (
+        args.early_stop_eval_success_threshold is not None
+        and not (0.0 <= args.early_stop_eval_success_threshold <= 1.0)
+    ):
+        raise ValueError("--early-stop-eval-success-threshold debe estar en [0, 1].")
     if args.ppo_target_kl < 0:
         raise ValueError("--ppo-target-kl no puede ser negativo.")
     if args.ppo_target_kl == 0:
         args.ppo_target_kl = None
     if args.ppo_clip_range_vf is not None and args.ppo_clip_range_vf < 0:
         args.ppo_clip_range_vf = None
+    if args.summary_eval_seed_offset not in args.eval_seed_offsets:
+        raise ValueError(
+            "--summary-eval-seed-offset debe pertenecer a --eval-seed-offsets-csv."
+        )
 
-    if args.ppo_batch_size > args.ppo_n_steps:
+    rollout_steps = int(args.ppo_n_steps) * int(args.n_envs)
+    if args.ppo_batch_size > rollout_steps:
         print(
-            "[WARN] --ppo-batch-size es mayor que --ppo-n-steps en n_env=1; "
+            "[WARN] --ppo-batch-size es mayor que el rollout total (ppo_n_steps * n_envs); "
             "SB3 lo maneja pero puede degradar entrenamiento."
         )
     if args.task_conditioning == "concat" and not args.append_task_id:
@@ -2516,6 +3161,12 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
 
     print(f"Run dir: {run_dir}")
     print(f"Mode={args.mode} Algo={args.algo} Benchmark=minigrid Tasks={len(tasks)}")
+    print(
+        f"Obs mode={args.obs_mode} FullyObs={args.fully_observable} "
+        f"n_envs={args.n_envs} eval_modes={args.eval_policy_modes} "
+        f"eval_offsets={args.eval_seed_offsets} "
+        f"summary=({args.summary_eval_policy_mode}, {args.summary_eval_seed_offset})"
+    )
     print(f"Versions file: {versions_path}")
     print(f"Task sequence: {tasks}\n")
 

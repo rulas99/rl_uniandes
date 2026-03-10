@@ -7,15 +7,109 @@ PYTHON_BIN="${PYTHON_BIN:-python3}"
 RUNNER="${RUNNER:-${SCRIPT_DIR}/minigrid_crl_runner_adapter.py}"
 AGGREGATOR="${AGGREGATOR:-${SCRIPT_DIR}/aggregate_ablation_results.py}"
 
-TASK_PRESET="${TASK_PRESET:-smoke4}"
+RUN_PROFILE="${RUN_PROFILE:-diagnostic}"
+TASK_PRESET="${TASK_PRESET:-smoke4_easy_fullobs}"
 OBS_MODE="${OBS_MODE:-image}"
-STEPS_PER_TASK="${STEPS_PER_TASK:-400000}"
-EVAL_EPISODES="${EVAL_EPISODES:-30}"
+if [[ -z "${STEPS_PER_TASK+x}" ]]; then
+  if [[ "${RUN_PROFILE}" == "diagnostic" ]]; then
+    STEPS_PER_TASK="100000"
+  elif [[ "${RUN_PROFILE}" == "sanity" ]]; then
+    STEPS_PER_TASK="1000000"
+  else
+    STEPS_PER_TASK="400000"
+  fi
+fi
+if [[ -z "${EVAL_EPISODES+x}" ]]; then
+  if [[ "${RUN_PROFILE}" == "diagnostic" ]]; then
+    EVAL_EPISODES="20"
+  elif [[ "${RUN_PROFILE}" == "sanity" ]]; then
+    EVAL_EPISODES="20"
+  else
+    EVAL_EPISODES="30"
+  fi
+fi
 MAX_EPISODE_STEPS="${MAX_EPISODE_STEPS:-300}"
-SEEDS_CSV="${SEEDS_CSV:-42,43,44}"
+if [[ -z "${SEEDS_CSV+x}" ]]; then
+  if [[ "${RUN_PROFILE}" == "diagnostic" || "${RUN_PROFILE}" == "sanity" ]]; then
+    SEEDS_CSV="42"
+  else
+    SEEDS_CSV="42,43,44"
+  fi
+fi
+FULLY_OBSERVABLE="${FULLY_OBSERVABLE:-1}"
+EVAL_POLICY_MODES_CSV="${EVAL_POLICY_MODES_CSV:-deterministic,stochastic}"
+SUMMARY_EVAL_POLICY_MODE="${SUMMARY_EVAL_POLICY_MODE:-deterministic}"
+EVAL_SEED_OFFSETS_CSV="${EVAL_SEED_OFFSETS_CSV:-0,1000}"
+SUMMARY_EVAL_SEED_OFFSET="${SUMMARY_EVAL_SEED_OFFSET:-1000}"
+PERIODIC_EVAL_SCOPE="${PERIODIC_EVAL_SCOPE:-}"
+PERIODIC_EVAL_FREQ="${PERIODIC_EVAL_FREQ:-0}"
+SAVE_BEST_EVAL_CHECKPOINT="${SAVE_BEST_EVAL_CHECKPOINT:-0}"
+RESTORE_BEST_EVAL_MODEL="${RESTORE_BEST_EVAL_MODEL:-0}"
+EARLY_STOP_EVAL_SUCCESS_THRESHOLD="${EARLY_STOP_EVAL_SUCCESS_THRESHOLD:-}"
+EARLY_STOP_EVAL_PATIENCE="${EARLY_STOP_EVAL_PATIENCE:-2}"
+N_ENVS="${N_ENVS:-8}"
+VEC_ENV="${VEC_ENV:-dummy}"
+ABLATION_IDS_CSV="${ABLATION_IDS_CSV:-}"
 EXP_ROOT="${EXP_ROOT:-logs/minigrid_ablations/${TASK_PRESET}}"
 ENABLE_RANK_SWEEP="${ENABLE_RANK_SWEEP:-0}"
+ENABLE_SINGLE_TASK_SANITY="${ENABLE_SINGLE_TASK_SANITY:-0}"
+ONLY_SANITY="${ONLY_SANITY:-0}"
 DRY_RUN="${DRY_RUN:-0}"
+SANITY_TASKS_CSV="${SANITY_TASKS_CSV:-}"
+CONTINUAL_TASKS_CSV="${CONTINUAL_TASKS_CSV:-}"
+
+if [[ "${TASK_PRESET}" == "smoke4_easy_fullobs" ]]; then
+  FULLY_OBSERVABLE=1
+  if [[ -z "${SANITY_TASKS_CSV}" ]]; then
+    SANITY_TASKS_CSV="MiniGrid-Empty-5x5-v0,MiniGrid-DoorKey-5x5-v0,MiniGrid-LavaGapS5-v0"
+  fi
+fi
+
+if [[ "${RUN_PROFILE}" == "sanity" ]]; then
+  ENABLE_SINGLE_TASK_SANITY=1
+  ONLY_SANITY=1
+  if [[ -z "${PERIODIC_EVAL_SCOPE}" ]]; then
+    PERIODIC_EVAL_SCOPE="active_task"
+  fi
+  if [[ "${PERIODIC_EVAL_FREQ}" == "0" ]]; then
+    PERIODIC_EVAL_FREQ="50000"
+  fi
+  if [[ "${SAVE_BEST_EVAL_CHECKPOINT}" == "0" ]]; then
+    SAVE_BEST_EVAL_CHECKPOINT="1"
+  fi
+  if [[ "${RESTORE_BEST_EVAL_MODEL}" == "0" ]]; then
+    RESTORE_BEST_EVAL_MODEL="1"
+  fi
+  if [[ -z "${EARLY_STOP_EVAL_SUCCESS_THRESHOLD}" ]]; then
+    EARLY_STOP_EVAL_SUCCESS_THRESHOLD="0.99"
+  fi
+fi
+
+if [[ -z "${ABLATION_IDS_CSV}" && "${RUN_PROFILE}" == "diagnostic" ]]; then
+  ABLATION_IDS_CSV="a01_shared_taskid_concat_no_multihead,a04_adapters_taskid_concat_multihead_delayed_r08_a08"
+fi
+
+if [[ "${RUN_PROFILE}" == "diagnostic" ]]; then
+  if [[ -z "${CONTINUAL_TASKS_CSV}" && -n "${SANITY_TASKS_CSV}" ]]; then
+    CONTINUAL_TASKS_CSV="${SANITY_TASKS_CSV}"
+  fi
+  if [[ -z "${PERIODIC_EVAL_SCOPE}" ]]; then
+    PERIODIC_EVAL_SCOPE="seen_tasks_mean"
+  fi
+  if [[ "${PERIODIC_EVAL_FREQ}" == "0" ]]; then
+    PERIODIC_EVAL_FREQ="50000"
+  fi
+  if [[ "${SAVE_BEST_EVAL_CHECKPOINT}" == "0" ]]; then
+    SAVE_BEST_EVAL_CHECKPOINT="1"
+  fi
+  if [[ "${RESTORE_BEST_EVAL_MODEL}" == "0" ]]; then
+    RESTORE_BEST_EVAL_MODEL="1"
+  fi
+fi
+
+if [[ -z "${PERIODIC_EVAL_SCOPE}" ]]; then
+  PERIODIC_EVAL_SCOPE="active_task"
+fi
 
 if [[ "${EXP_ROOT}" != /* ]]; then
   EXP_ROOT="${SCRIPT_DIR}/${EXP_ROOT}"
@@ -77,10 +171,18 @@ COMMON_ARGS=(
   --eval-episodes "${EVAL_EPISODES}"
   --max-episode-steps "${MAX_EPISODE_STEPS}"
   --obs-mode "${OBS_MODE}"
+  --eval-policy-modes-csv "${EVAL_POLICY_MODES_CSV}"
+  --summary-eval-policy-mode "${SUMMARY_EVAL_POLICY_MODE}"
+  --eval-seed-offsets-csv "${EVAL_SEED_OFFSETS_CSV}"
+  --summary-eval-seed-offset "${SUMMARY_EVAL_SEED_OFFSET}"
+  --periodic-eval-scope "${PERIODIC_EVAL_SCOPE}"
+  --periodic-eval-freq "${PERIODIC_EVAL_FREQ}"
   --ppo-learning-rate 1e-4
-  --ppo-n-steps 4096
-  --ppo-batch-size 512
+  --ppo-n-steps 512
+  --ppo-batch-size 256
   --ppo-n-epochs 4
+  --n-envs "${N_ENVS}"
+  --vec-env "${VEC_ENV}"
   --ppo-clip-range 0.1
   --ppo-clip-range-vf 0.1
   --ppo-ent-coef 0.005
@@ -88,6 +190,29 @@ COMMON_ARGS=(
   --reset-optimizers-every-task
   --reset-metric-windows-every-task
 )
+
+if [[ "${SAVE_BEST_EVAL_CHECKPOINT}" == "1" ]]; then
+  COMMON_ARGS+=(--save-best-eval-checkpoint)
+else
+  COMMON_ARGS+=(--no-save-best-eval-checkpoint)
+fi
+
+if [[ "${RESTORE_BEST_EVAL_MODEL}" == "1" ]]; then
+  COMMON_ARGS+=(--restore-best-eval-model)
+else
+  COMMON_ARGS+=(--no-restore-best-eval-model)
+fi
+
+if [[ -n "${EARLY_STOP_EVAL_SUCCESS_THRESHOLD}" ]]; then
+  COMMON_ARGS+=(--early-stop-eval-success-threshold "${EARLY_STOP_EVAL_SUCCESS_THRESHOLD}")
+  COMMON_ARGS+=(--early-stop-eval-patience "${EARLY_STOP_EVAL_PATIENCE}")
+fi
+
+if [[ "${FULLY_OBSERVABLE}" == "1" ]]; then
+  COMMON_ARGS+=(--fully-observable)
+else
+  COMMON_ARGS+=(--no-fully-observable)
+fi
 
 validate_paths() {
   if [[ ! -f "${RUNNER}" ]]; then
@@ -101,6 +226,10 @@ validate_paths() {
 }
 
 validate_scalar_inputs() {
+  if [[ "${RUN_PROFILE}" != "diagnostic" && "${RUN_PROFILE}" != "sanity" && "${RUN_PROFILE}" != "core" && "${RUN_PROFILE}" != "full" ]]; then
+    log "ERROR: RUN_PROFILE debe ser diagnostic, sanity, core o full"
+    exit 1
+  fi
   if [[ -z "${TASK_PRESET}" || -z "${OBS_MODE}" ]]; then
     log "ERROR: TASK_PRESET y OBS_MODE no pueden quedar vacíos"
     exit 1
@@ -109,12 +238,44 @@ validate_scalar_inputs() {
     log "ERROR: steps/evals/max_episode_steps deben ser > 0"
     exit 1
   fi
+  if [[ "${N_ENVS}" -le 0 ]]; then
+    log "ERROR: N_ENVS debe ser > 0"
+    exit 1
+  fi
+  if [[ "${VEC_ENV}" != "dummy" && "${VEC_ENV}" != "subproc" ]]; then
+    log "ERROR: VEC_ENV debe ser dummy o subproc"
+    exit 1
+  fi
+  if [[ "${FULLY_OBSERVABLE}" != "0" && "${FULLY_OBSERVABLE}" != "1" ]]; then
+    log "ERROR: FULLY_OBSERVABLE debe ser 0 o 1"
+    exit 1
+  fi
   if [[ "${ENABLE_RANK_SWEEP}" != "0" && "${ENABLE_RANK_SWEEP}" != "1" ]]; then
     log "ERROR: ENABLE_RANK_SWEEP debe ser 0 o 1"
     exit 1
   fi
+  if [[ "${ENABLE_SINGLE_TASK_SANITY}" != "0" && "${ENABLE_SINGLE_TASK_SANITY}" != "1" ]]; then
+    log "ERROR: ENABLE_SINGLE_TASK_SANITY debe ser 0 o 1"
+    exit 1
+  fi
+  if [[ "${SAVE_BEST_EVAL_CHECKPOINT}" != "0" && "${SAVE_BEST_EVAL_CHECKPOINT}" != "1" ]]; then
+    log "ERROR: SAVE_BEST_EVAL_CHECKPOINT debe ser 0 o 1"
+    exit 1
+  fi
+  if [[ "${RESTORE_BEST_EVAL_MODEL}" != "0" && "${RESTORE_BEST_EVAL_MODEL}" != "1" ]]; then
+    log "ERROR: RESTORE_BEST_EVAL_MODEL debe ser 0 o 1"
+    exit 1
+  fi
+  if [[ "${ONLY_SANITY}" != "0" && "${ONLY_SANITY}" != "1" ]]; then
+    log "ERROR: ONLY_SANITY debe ser 0 o 1"
+    exit 1
+  fi
   if [[ "${DRY_RUN}" != "0" && "${DRY_RUN}" != "1" ]]; then
     log "ERROR: DRY_RUN debe ser 0 o 1"
+    exit 1
+  fi
+  if [[ "${PERIODIC_EVAL_SCOPE}" != "active_task" && "${PERIODIC_EVAL_SCOPE}" != "seen_tasks_mean" ]]; then
+    log "ERROR: PERIODIC_EVAL_SCOPE debe ser active_task o seen_tasks_mean"
     exit 1
   fi
 }
@@ -137,11 +298,26 @@ write_session_config() {
 {
   "timestamp": "${TIMESTAMP}",
   "session_id": "${SESSION_ID}",
+  "run_profile": "${RUN_PROFILE}",
   "task_preset": "${TASK_PRESET}",
   "obs_mode": "${OBS_MODE}",
+  "fully_observable": ${FULLY_OBSERVABLE},
   "steps_per_task": ${STEPS_PER_TASK},
   "eval_episodes": ${EVAL_EPISODES},
   "max_episode_steps": ${MAX_EPISODE_STEPS},
+  "eval_policy_modes_csv": "${EVAL_POLICY_MODES_CSV}",
+  "summary_eval_policy_mode": "${SUMMARY_EVAL_POLICY_MODE}",
+  "eval_seed_offsets_csv": "${EVAL_SEED_OFFSETS_CSV}",
+  "summary_eval_seed_offset": ${SUMMARY_EVAL_SEED_OFFSET},
+  "periodic_eval_scope": "${PERIODIC_EVAL_SCOPE}",
+  "periodic_eval_freq": ${PERIODIC_EVAL_FREQ},
+  "save_best_eval_checkpoint": ${SAVE_BEST_EVAL_CHECKPOINT},
+  "restore_best_eval_model": ${RESTORE_BEST_EVAL_MODEL},
+  "early_stop_eval_success_threshold": ${EARLY_STOP_EVAL_SUCCESS_THRESHOLD:-null},
+  "early_stop_eval_patience": ${EARLY_STOP_EVAL_PATIENCE},
+  "n_envs": ${N_ENVS},
+  "vec_env": "${VEC_ENV}",
+  "ablation_ids_csv": "${ABLATION_IDS_CSV}",
   "seeds_csv": "${SEEDS_CSV}",
   "exp_root": "${EXP_ROOT}",
   "session_root": "${SESSION_ROOT}",
@@ -149,6 +325,10 @@ write_session_config() {
   "runner": "${RUNNER}",
   "aggregator": "${AGGREGATOR}",
   "enable_rank_sweep": ${ENABLE_RANK_SWEEP},
+  "enable_single_task_sanity": ${ENABLE_SINGLE_TASK_SANITY},
+  "only_sanity": ${ONLY_SANITY},
+  "sanity_tasks_csv": "${SANITY_TASKS_CSV}",
+  "continual_tasks_csv": "${CONTINUAL_TASKS_CSV}",
   "dry_run": ${DRY_RUN}
 }
 JSON
@@ -190,6 +370,26 @@ PLAN_GROUPS=()
 PLAN_DESCRIPTIONS=()
 PLAN_HYPOTHESES=()
 PLAN_ARGS=()
+ARGS_SEP=$'\x1f'
+
+sanitize_id() {
+  echo "$1" | tr -c '[:alnum:]' '_' | sed 's/^_//; s/_$//'
+}
+
+resolve_preset_tasks_csv() {
+  case "${TASK_PRESET}" in
+    smoke4_easy_fullobs)
+      echo "MiniGrid-Empty-5x5-v0,MiniGrid-DoorKey-5x5-v0,MiniGrid-LavaGapS5-v0,MiniGrid-GoToDoor-5x5-v0"
+      return 0
+      ;;
+    smoke4)
+      echo "MiniGrid-Empty-5x5-v0,MiniGrid-DoorKey-5x5-v0,MiniGrid-FourRooms-v0,MiniGrid-Unlock-v0"
+      return 0
+      ;;
+  esac
+  "${PYTHON_BIN}" -c 'import importlib.util, sys; spec = importlib.util.spec_from_file_location("runner_module", sys.argv[1]); module = importlib.util.module_from_spec(spec); spec.loader.exec_module(module); print(",".join(module.resolve_task_sequence(sys.argv[2], None)))' \
+    "${RUNNER}" "${TASK_PRESET}"
+}
 
 register_ablation() {
   local ablation_id="$1"
@@ -197,8 +397,25 @@ register_ablation() {
   local description="$3"
   local hypothesis="$4"
   shift 4
-  local joined_args
-  joined_args="$(printf '%q ' "$@")"
+  local has_tasks_flag=0
+  local token=""
+  for token in "$@"; do
+    if [[ "${token}" == "--tasks" ]]; then
+      has_tasks_flag=1
+      break
+    fi
+  done
+  if [[ "${matrix_group}" != "sanity" && -n "${CONTINUAL_TASKS_CSV}" && "${has_tasks_flag}" == "0" ]]; then
+    set -- --tasks "${CONTINUAL_TASKS_CSV}" "$@"
+  fi
+  local joined_args=""
+  local token=""
+  for token in "$@"; do
+    if [[ -n "${joined_args}" ]]; then
+      joined_args+="${ARGS_SEP}"
+    fi
+    joined_args+="${token}"
+  done
   PLAN_IDS+=("${ablation_id}")
   PLAN_GROUPS+=("${matrix_group}")
   PLAN_DESCRIPTIONS+=("${description}")
@@ -206,7 +423,99 @@ register_ablation() {
   PLAN_ARGS+=("${joined_args}")
 }
 
+apply_ablation_filter() {
+  if [[ -z "${ABLATION_IDS_CSV}" ]]; then
+    return 0
+  fi
+
+  local IFS=','
+  local -a requested_ids_raw=()
+  read -r -a requested_ids_raw <<< "${ABLATION_IDS_CSV}"
+
+  local -A requested_ids=()
+  local raw_id=""
+  local clean_id=""
+  for raw_id in "${requested_ids_raw[@]}"; do
+    clean_id="$(echo "${raw_id}" | xargs)"
+    if [[ -n "${clean_id}" ]]; then
+      requested_ids["${clean_id}"]=1
+    fi
+  done
+
+  if [[ ${#requested_ids[@]} -eq 0 ]]; then
+    log "ERROR: ABLATION_IDS_CSV quedó vacío tras parseo"
+    exit 1
+  fi
+
+  local -a filtered_ids=()
+  local -a filtered_groups=()
+  local -a filtered_descriptions=()
+  local -a filtered_hypotheses=()
+  local -a filtered_args=()
+  local -A found_ids=()
+  local idx=0
+  local ablation_id=""
+
+  for idx in "${!PLAN_IDS[@]}"; do
+    ablation_id="${PLAN_IDS[$idx]}"
+    if [[ -n "${requested_ids[${ablation_id}]:-}" || ( "${ENABLE_SINGLE_TASK_SANITY}" == "1" && "${PLAN_GROUPS[$idx]}" == "sanity" ) ]]; then
+      filtered_ids+=("${PLAN_IDS[$idx]}")
+      filtered_groups+=("${PLAN_GROUPS[$idx]}")
+      filtered_descriptions+=("${PLAN_DESCRIPTIONS[$idx]}")
+      filtered_hypotheses+=("${PLAN_HYPOTHESES[$idx]}")
+      filtered_args+=("${PLAN_ARGS[$idx]}")
+      found_ids["${ablation_id}"]=1
+    fi
+  done
+
+  if [[ ${#filtered_ids[@]} -eq 0 ]]; then
+    log "ERROR: el filtro de ablaciones dejó el plan vacío"
+    exit 1
+  fi
+
+  for ablation_id in "${!requested_ids[@]}"; do
+    if [[ -z "${found_ids[${ablation_id}]:-}" ]]; then
+      log "ERROR: ABLATION_IDS_CSV incluye ablation_id no registrado: ${ablation_id}"
+      exit 1
+    fi
+  done
+
+  PLAN_IDS=("${filtered_ids[@]}")
+  PLAN_GROUPS=("${filtered_groups[@]}")
+  PLAN_DESCRIPTIONS=("${filtered_descriptions[@]}")
+  PLAN_HYPOTHESES=("${filtered_hypotheses[@]}")
+  PLAN_ARGS=("${filtered_args[@]}")
+}
+
 build_ablation_plan() {
+  if [[ "${ENABLE_SINGLE_TASK_SANITY}" == "1" ]]; then
+    local sanity_csv
+    if [[ -n "${SANITY_TASKS_CSV}" ]]; then
+      sanity_csv="${SANITY_TASKS_CSV}"
+    else
+      sanity_csv="$(resolve_preset_tasks_csv)"
+    fi
+    local IFS=','
+    read -r -a SANITY_TASKS <<< "${sanity_csv}"
+    for task in "${SANITY_TASKS[@]}"; do
+      local safe_task
+      safe_task="$(sanitize_id "${task}")"
+      register_ablation \
+        "s00_sanity_${safe_task}" \
+        "sanity" \
+        "Single-task sanity run para ${task} con PPO shared vanilla." \
+        "Verifica que la tarea sea aprendible en single-task antes de atribuir resultados de continual learning al método." \
+        --tasks "${task}" \
+        --task-conditioning ignore \
+        --no-adapter-enabled \
+        --no-multi-head-enabled
+    done
+  fi
+
+  if [[ "${ONLY_SANITY}" == "1" ]]; then
+    return 0
+  fi
+
   register_ablation \
     "a00_shared_vanilla_no_taskid_no_multihead" \
     "reference" \
@@ -339,7 +648,7 @@ validate_runner_flags() {
     fi
   done
   for i in "${!PLAN_ARGS[@]}"; do
-    IFS=' ' read -r -a AB_ARGS <<< "${PLAN_ARGS[$i]}"
+    IFS="${ARGS_SEP}" read -r -a AB_ARGS <<< "${PLAN_ARGS[$i]}"
     for token in "${AB_ARGS[@]}"; do
       if [[ "${token}" == --* ]]; then
         flags+=("${token}")
@@ -399,7 +708,10 @@ emit_plan_rows() {
       local hypothesis="${PLAN_HYPOTHESES[$i]}"
       local base_dir="${RUNS_ROOT}/${ablation_id}/seed_${seed}"
       local console_log="${CONSOLE_DIR}/${ablation_id}__seed_${seed}.log"
-      local cmd="${PYTHON_BIN} ${RUNNER} ${COMMON_ARGS[*]} --seed ${seed} ${PLAN_ARGS[$i]} --log-dir ${base_dir}"
+      IFS="${ARGS_SEP}" read -r -a AB_ARGS <<< "${PLAN_ARGS[$i]}"
+      local cmd_arr=("${PYTHON_BIN}" "${RUNNER}" "${COMMON_ARGS[@]}" --seed "${seed}" "${AB_ARGS[@]}" --log-dir "${base_dir}")
+      local cmd
+      cmd="$(printf '%q ' "${cmd_arr[@]}")"
       printf '%s,%s,%s,%s,%s,%s,%s,%s,%s\n' \
         "${idx}" \
         "$(csv_escape "${matrix_group}")" \
@@ -537,7 +849,7 @@ run_all() {
   for seed in "${SEEDS[@]}"; do
     for i in "${!PLAN_IDS[@]}"; do
       planned_index=$((planned_index + 1))
-      IFS=' ' read -r -a AB_ARGS <<< "${PLAN_ARGS[$i]}"
+      IFS="${ARGS_SEP}" read -r -a AB_ARGS <<< "${PLAN_ARGS[$i]}"
       run_one \
         "${planned_index}" \
         "${PLAN_GROUPS[$i]}" \
@@ -583,6 +895,7 @@ main() {
   read_seeds
   validate_seeds
   build_ablation_plan
+  apply_ablation_filter
   validate_plan_integrity
   validate_runner_flags
   write_session_config
@@ -590,10 +903,16 @@ main() {
   emit_plan_rows
 
   log "Session root: ${SESSION_ROOT}"
-  log "Task preset: ${TASK_PRESET} | Obs mode: ${OBS_MODE} | Seeds: $(join_by ',' "${SEEDS[@]}")"
+  log "Run profile: ${RUN_PROFILE}"
+  log "Task preset: ${TASK_PRESET} | Obs mode: ${OBS_MODE} | FullyObs: ${FULLY_OBSERVABLE} | Seeds: $(join_by ',' "${SEEDS[@]}")"
+  log "Eval modes: ${EVAL_POLICY_MODES_CSV} | Summary mode: ${SUMMARY_EVAL_POLICY_MODE}"
+  log "Eval seed offsets: ${EVAL_SEED_OFFSETS_CSV} | Summary offset: ${SUMMARY_EVAL_SEED_OFFSET} | n_envs: ${N_ENVS} | vec_env: ${VEC_ENV}"
+  log "Periodic eval: scope=${PERIODIC_EVAL_SCOPE} | freq=${PERIODIC_EVAL_FREQ} | save_best_eval=${SAVE_BEST_EVAL_CHECKPOINT} | restore_best_eval=${RESTORE_BEST_EVAL_MODEL} | early_stop=${EARLY_STOP_EVAL_SUCCESS_THRESHOLD:-<off>}"
   log "Ablaciones planeadas: ${#PLAN_IDS[@]} | Corridas totales: ${TOTAL_RUNS}"
-  log "Rank sweep adicional: ${ENABLE_RANK_SWEEP}"
-  log "Plan group counts: core/reference/rank_sweep"
+  log "Ablation filter: ${ABLATION_IDS_CSV:-<none>}"
+  log "Rank sweep adicional: ${ENABLE_RANK_SWEEP} | Single-task sanity: ${ENABLE_SINGLE_TASK_SANITY} | Only sanity: ${ONLY_SANITY}"
+  log "Sanity tasks: ${SANITY_TASKS_CSV:-<preset>}"
+  log "Continual tasks: ${CONTINUAL_TASKS_CSV:-<preset>}"
 
   run_all
   local analysis_status="ok"
