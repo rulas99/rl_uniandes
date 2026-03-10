@@ -39,16 +39,27 @@ fi
 FULLY_OBSERVABLE="${FULLY_OBSERVABLE:-1}"
 EVAL_POLICY_MODES_CSV="${EVAL_POLICY_MODES_CSV:-deterministic,stochastic}"
 SUMMARY_EVAL_POLICY_MODE="${SUMMARY_EVAL_POLICY_MODE:-deterministic}"
+SUMMARY_MODEL_VARIANT="${SUMMARY_MODEL_VARIANT:-current}"
 EVAL_SEED_OFFSETS_CSV="${EVAL_SEED_OFFSETS_CSV:-0,1000}"
 SUMMARY_EVAL_SEED_OFFSET="${SUMMARY_EVAL_SEED_OFFSET:-1000}"
 PERIODIC_EVAL_SCOPE="${PERIODIC_EVAL_SCOPE:-}"
 PERIODIC_EVAL_FREQ="${PERIODIC_EVAL_FREQ:-0}"
 SAVE_BEST_EVAL_CHECKPOINT="${SAVE_BEST_EVAL_CHECKPOINT:-0}"
+EVAL_BEST_EVAL_MODEL_AT_PHASE_END="${EVAL_BEST_EVAL_MODEL_AT_PHASE_END:-0}"
 RESTORE_BEST_EVAL_MODEL="${RESTORE_BEST_EVAL_MODEL:-0}"
 EARLY_STOP_EVAL_SUCCESS_THRESHOLD="${EARLY_STOP_EVAL_SUCCESS_THRESHOLD:-}"
 EARLY_STOP_EVAL_PATIENCE="${EARLY_STOP_EVAL_PATIENCE:-2}"
 N_ENVS="${N_ENVS:-8}"
 VEC_ENV="${VEC_ENV:-dummy}"
+PPO_LEARNING_RATE="${PPO_LEARNING_RATE:-1e-4}"
+PPO_N_STEPS="${PPO_N_STEPS:-512}"
+PPO_BATCH_SIZE="${PPO_BATCH_SIZE:-256}"
+PPO_N_EPOCHS="${PPO_N_EPOCHS:-4}"
+PPO_CLIP_RANGE="${PPO_CLIP_RANGE:-0.1}"
+PPO_CLIP_RANGE_VF="${PPO_CLIP_RANGE_VF:-0.1}"
+PPO_ENT_COEF="${PPO_ENT_COEF:-0.005}"
+PPO_TARGET_KL="${PPO_TARGET_KL:-0.01}"
+PPO_ENT_COEF_TASK_OVERRIDES_CSV="${PPO_ENT_COEF_TASK_OVERRIDES_CSV:-}"
 ABLATION_IDS_CSV="${ABLATION_IDS_CSV:-}"
 EXP_ROOT="${EXP_ROOT:-logs/minigrid_ablations/${TASK_PRESET}}"
 ENABLE_RANK_SWEEP="${ENABLE_RANK_SWEEP:-0}"
@@ -57,6 +68,8 @@ ONLY_SANITY="${ONLY_SANITY:-0}"
 DRY_RUN="${DRY_RUN:-0}"
 SANITY_TASKS_CSV="${SANITY_TASKS_CSV:-}"
 CONTINUAL_TASKS_CSV="${CONTINUAL_TASKS_CSV:-}"
+ADAPTER_TRAIN_ACTOR_HEADS_AFTER_WARMUP="${ADAPTER_TRAIN_ACTOR_HEADS_AFTER_WARMUP:-1}"
+ADAPTER_TRAIN_FULL_CRITIC_AFTER_WARMUP="${ADAPTER_TRAIN_FULL_CRITIC_AFTER_WARMUP:-0}"
 
 if [[ "${TASK_PRESET}" == "smoke4_easy_fullobs" ]]; then
   FULLY_OBSERVABLE=1
@@ -77,16 +90,20 @@ if [[ "${RUN_PROFILE}" == "sanity" ]]; then
   if [[ "${SAVE_BEST_EVAL_CHECKPOINT}" == "0" ]]; then
     SAVE_BEST_EVAL_CHECKPOINT="1"
   fi
+  if [[ "${EVAL_BEST_EVAL_MODEL_AT_PHASE_END}" == "0" ]]; then
+    EVAL_BEST_EVAL_MODEL_AT_PHASE_END="1"
+  fi
   if [[ "${RESTORE_BEST_EVAL_MODEL}" == "0" ]]; then
     RESTORE_BEST_EVAL_MODEL="1"
   fi
+  SUMMARY_MODEL_VARIANT="best_eval"
   if [[ -z "${EARLY_STOP_EVAL_SUCCESS_THRESHOLD}" ]]; then
     EARLY_STOP_EVAL_SUCCESS_THRESHOLD="0.99"
   fi
 fi
 
 if [[ -z "${ABLATION_IDS_CSV}" && "${RUN_PROFILE}" == "diagnostic" ]]; then
-  ABLATION_IDS_CSV="a01_shared_taskid_concat_no_multihead,a04_adapters_taskid_concat_multihead_delayed_r08_a08"
+  ABLATION_IDS_CSV="a01_shared_taskid_concat_no_multihead,a02_shared_taskid_concat_multihead_delayed,a03_adapters_taskid_concat_no_multihead_r08_a08,a04_adapters_taskid_concat_multihead_delayed_r08_a08"
 fi
 
 if [[ "${RUN_PROFILE}" == "diagnostic" ]]; then
@@ -94,7 +111,7 @@ if [[ "${RUN_PROFILE}" == "diagnostic" ]]; then
     CONTINUAL_TASKS_CSV="${SANITY_TASKS_CSV}"
   fi
   if [[ -z "${PERIODIC_EVAL_SCOPE}" ]]; then
-    PERIODIC_EVAL_SCOPE="seen_tasks_mean"
+    PERIODIC_EVAL_SCOPE="active_task"
   fi
   if [[ "${PERIODIC_EVAL_FREQ}" == "0" ]]; then
     PERIODIC_EVAL_FREQ="50000"
@@ -102,9 +119,10 @@ if [[ "${RUN_PROFILE}" == "diagnostic" ]]; then
   if [[ "${SAVE_BEST_EVAL_CHECKPOINT}" == "0" ]]; then
     SAVE_BEST_EVAL_CHECKPOINT="1"
   fi
-  if [[ "${RESTORE_BEST_EVAL_MODEL}" == "0" ]]; then
-    RESTORE_BEST_EVAL_MODEL="1"
+  if [[ "${EVAL_BEST_EVAL_MODEL_AT_PHASE_END}" == "0" ]]; then
+    EVAL_BEST_EVAL_MODEL_AT_PHASE_END="1"
   fi
+  SUMMARY_MODEL_VARIANT="${SUMMARY_MODEL_VARIANT:-current}"
 fi
 
 if [[ -z "${PERIODIC_EVAL_SCOPE}" ]]; then
@@ -173,28 +191,39 @@ COMMON_ARGS=(
   --obs-mode "${OBS_MODE}"
   --eval-policy-modes-csv "${EVAL_POLICY_MODES_CSV}"
   --summary-eval-policy-mode "${SUMMARY_EVAL_POLICY_MODE}"
+  --summary-model-variant "${SUMMARY_MODEL_VARIANT}"
   --eval-seed-offsets-csv "${EVAL_SEED_OFFSETS_CSV}"
   --summary-eval-seed-offset "${SUMMARY_EVAL_SEED_OFFSET}"
   --periodic-eval-scope "${PERIODIC_EVAL_SCOPE}"
   --periodic-eval-freq "${PERIODIC_EVAL_FREQ}"
-  --ppo-learning-rate 1e-4
-  --ppo-n-steps 512
-  --ppo-batch-size 256
-  --ppo-n-epochs 4
+  --ppo-learning-rate "${PPO_LEARNING_RATE}"
+  --ppo-n-steps "${PPO_N_STEPS}"
+  --ppo-batch-size "${PPO_BATCH_SIZE}"
+  --ppo-n-epochs "${PPO_N_EPOCHS}"
   --n-envs "${N_ENVS}"
   --vec-env "${VEC_ENV}"
-  --ppo-clip-range 0.1
-  --ppo-clip-range-vf 0.1
-  --ppo-ent-coef 0.005
-  --ppo-target-kl 0.01
+  --ppo-clip-range "${PPO_CLIP_RANGE}"
+  --ppo-clip-range-vf "${PPO_CLIP_RANGE_VF}"
+  --ppo-ent-coef "${PPO_ENT_COEF}"
+  --ppo-target-kl "${PPO_TARGET_KL}"
   --reset-optimizers-every-task
   --reset-metric-windows-every-task
 )
+
+if [[ -n "${PPO_ENT_COEF_TASK_OVERRIDES_CSV}" ]]; then
+  COMMON_ARGS+=(--ppo-ent-coef-task-overrides-csv "${PPO_ENT_COEF_TASK_OVERRIDES_CSV}")
+fi
 
 if [[ "${SAVE_BEST_EVAL_CHECKPOINT}" == "1" ]]; then
   COMMON_ARGS+=(--save-best-eval-checkpoint)
 else
   COMMON_ARGS+=(--no-save-best-eval-checkpoint)
+fi
+
+if [[ "${EVAL_BEST_EVAL_MODEL_AT_PHASE_END}" == "1" ]]; then
+  COMMON_ARGS+=(--eval-best-eval-model-at-phase-end)
+else
+  COMMON_ARGS+=(--no-eval-best-eval-model-at-phase-end)
 fi
 
 if [[ "${RESTORE_BEST_EVAL_MODEL}" == "1" ]]; then
@@ -262,6 +291,10 @@ validate_scalar_inputs() {
     log "ERROR: SAVE_BEST_EVAL_CHECKPOINT debe ser 0 o 1"
     exit 1
   fi
+  if [[ "${EVAL_BEST_EVAL_MODEL_AT_PHASE_END}" != "0" && "${EVAL_BEST_EVAL_MODEL_AT_PHASE_END}" != "1" ]]; then
+    log "ERROR: EVAL_BEST_EVAL_MODEL_AT_PHASE_END debe ser 0 o 1"
+    exit 1
+  fi
   if [[ "${RESTORE_BEST_EVAL_MODEL}" != "0" && "${RESTORE_BEST_EVAL_MODEL}" != "1" ]]; then
     log "ERROR: RESTORE_BEST_EVAL_MODEL debe ser 0 o 1"
     exit 1
@@ -276,6 +309,22 @@ validate_scalar_inputs() {
   fi
   if [[ "${PERIODIC_EVAL_SCOPE}" != "active_task" && "${PERIODIC_EVAL_SCOPE}" != "seen_tasks_mean" ]]; then
     log "ERROR: PERIODIC_EVAL_SCOPE debe ser active_task o seen_tasks_mean"
+    exit 1
+  fi
+  if [[ "${SUMMARY_MODEL_VARIANT}" != "current" && "${SUMMARY_MODEL_VARIANT}" != "best_eval" ]]; then
+    log "ERROR: SUMMARY_MODEL_VARIANT debe ser current o best_eval"
+    exit 1
+  fi
+  if [[ "${SUMMARY_MODEL_VARIANT}" == "best_eval" && "${SAVE_BEST_EVAL_CHECKPOINT}" != "1" ]]; then
+    log "ERROR: SUMMARY_MODEL_VARIANT=best_eval requiere SAVE_BEST_EVAL_CHECKPOINT=1"
+    exit 1
+  fi
+  if [[ "${ADAPTER_TRAIN_ACTOR_HEADS_AFTER_WARMUP}" != "0" && "${ADAPTER_TRAIN_ACTOR_HEADS_AFTER_WARMUP}" != "1" ]]; then
+    log "ERROR: ADAPTER_TRAIN_ACTOR_HEADS_AFTER_WARMUP debe ser 0 o 1"
+    exit 1
+  fi
+  if [[ "${ADAPTER_TRAIN_FULL_CRITIC_AFTER_WARMUP}" != "0" && "${ADAPTER_TRAIN_FULL_CRITIC_AFTER_WARMUP}" != "1" ]]; then
+    log "ERROR: ADAPTER_TRAIN_FULL_CRITIC_AFTER_WARMUP debe ser 0 o 1"
     exit 1
   fi
 }
@@ -307,16 +356,27 @@ write_session_config() {
   "max_episode_steps": ${MAX_EPISODE_STEPS},
   "eval_policy_modes_csv": "${EVAL_POLICY_MODES_CSV}",
   "summary_eval_policy_mode": "${SUMMARY_EVAL_POLICY_MODE}",
+  "summary_model_variant": "${SUMMARY_MODEL_VARIANT}",
   "eval_seed_offsets_csv": "${EVAL_SEED_OFFSETS_CSV}",
   "summary_eval_seed_offset": ${SUMMARY_EVAL_SEED_OFFSET},
   "periodic_eval_scope": "${PERIODIC_EVAL_SCOPE}",
   "periodic_eval_freq": ${PERIODIC_EVAL_FREQ},
   "save_best_eval_checkpoint": ${SAVE_BEST_EVAL_CHECKPOINT},
+  "eval_best_eval_model_at_phase_end": ${EVAL_BEST_EVAL_MODEL_AT_PHASE_END},
   "restore_best_eval_model": ${RESTORE_BEST_EVAL_MODEL},
   "early_stop_eval_success_threshold": ${EARLY_STOP_EVAL_SUCCESS_THRESHOLD:-null},
   "early_stop_eval_patience": ${EARLY_STOP_EVAL_PATIENCE},
   "n_envs": ${N_ENVS},
   "vec_env": "${VEC_ENV}",
+  "ppo_learning_rate": ${PPO_LEARNING_RATE},
+  "ppo_n_steps": ${PPO_N_STEPS},
+  "ppo_batch_size": ${PPO_BATCH_SIZE},
+  "ppo_n_epochs": ${PPO_N_EPOCHS},
+  "ppo_clip_range": ${PPO_CLIP_RANGE},
+  "ppo_clip_range_vf": ${PPO_CLIP_RANGE_VF},
+  "ppo_ent_coef": ${PPO_ENT_COEF},
+  "ppo_target_kl": ${PPO_TARGET_KL},
+  "ppo_ent_coef_task_overrides_csv": "${PPO_ENT_COEF_TASK_OVERRIDES_CSV}",
   "ablation_ids_csv": "${ABLATION_IDS_CSV}",
   "seeds_csv": "${SEEDS_CSV}",
   "exp_root": "${EXP_ROOT}",
@@ -329,6 +389,8 @@ write_session_config() {
   "only_sanity": ${ONLY_SANITY},
   "sanity_tasks_csv": "${SANITY_TASKS_CSV}",
   "continual_tasks_csv": "${CONTINUAL_TASKS_CSV}",
+  "adapter_train_actor_heads_after_warmup": ${ADAPTER_TRAIN_ACTOR_HEADS_AFTER_WARMUP},
+  "adapter_train_full_critic_after_warmup": ${ADAPTER_TRAIN_FULL_CRITIC_AFTER_WARMUP},
   "dry_run": ${DRY_RUN}
 }
 JSON
@@ -375,6 +437,18 @@ ARGS_SEP=$'\x1f'
 sanitize_id() {
   echo "$1" | tr -c '[:alnum:]' '_' | sed 's/^_//; s/_$//'
 }
+
+ADAPTER_AFTER_WARMUP_ARGS=()
+if [[ "${ADAPTER_TRAIN_ACTOR_HEADS_AFTER_WARMUP}" == "1" ]]; then
+  ADAPTER_AFTER_WARMUP_ARGS+=(--adapter-train-actor-heads-after-warmup)
+else
+  ADAPTER_AFTER_WARMUP_ARGS+=(--no-adapter-train-actor-heads-after-warmup)
+fi
+if [[ "${ADAPTER_TRAIN_FULL_CRITIC_AFTER_WARMUP}" == "1" ]]; then
+  ADAPTER_AFTER_WARMUP_ARGS+=(--adapter-train-full-critic-after-warmup)
+else
+  ADAPTER_AFTER_WARMUP_ARGS+=(--no-adapter-train-full-critic-after-warmup)
+fi
 
 resolve_preset_tasks_csv() {
   case "${TASK_PRESET}" in
@@ -557,6 +631,7 @@ build_ablation_plan() {
     --adapter-warmup-tasks 1 \
     --adapter-rank 8 \
     --adapter-alpha 8 \
+    "${ADAPTER_AFTER_WARMUP_ARGS[@]}" \
     --no-multi-head-enabled
 
   register_ablation \
@@ -570,6 +645,7 @@ build_ablation_plan() {
     --adapter-warmup-tasks 1 \
     --adapter-rank 8 \
     --adapter-alpha 8 \
+    "${ADAPTER_AFTER_WARMUP_ARGS[@]}" \
     --multi-head-enabled \
     --multi-head-warmup-tasks 1
 
@@ -585,6 +661,7 @@ build_ablation_plan() {
       --adapter-warmup-tasks 1 \
       --adapter-rank 16 \
       --adapter-alpha 16 \
+      "${ADAPTER_AFTER_WARMUP_ARGS[@]}" \
       --no-multi-head-enabled
 
     register_ablation \
@@ -598,6 +675,7 @@ build_ablation_plan() {
       --adapter-warmup-tasks 1 \
       --adapter-rank 16 \
       --adapter-alpha 16 \
+      "${ADAPTER_AFTER_WARMUP_ARGS[@]}" \
       --multi-head-enabled \
       --multi-head-warmup-tasks 1
 
@@ -612,6 +690,7 @@ build_ablation_plan() {
       --adapter-warmup-tasks 1 \
       --adapter-rank 32 \
       --adapter-alpha 32 \
+      "${ADAPTER_AFTER_WARMUP_ARGS[@]}" \
       --no-multi-head-enabled
 
     register_ablation \
@@ -625,6 +704,7 @@ build_ablation_plan() {
       --adapter-warmup-tasks 1 \
       --adapter-rank 32 \
       --adapter-alpha 32 \
+      "${ADAPTER_AFTER_WARMUP_ARGS[@]}" \
       --multi-head-enabled \
       --multi-head-warmup-tasks 1
   fi
@@ -905,14 +985,21 @@ main() {
   log "Session root: ${SESSION_ROOT}"
   log "Run profile: ${RUN_PROFILE}"
   log "Task preset: ${TASK_PRESET} | Obs mode: ${OBS_MODE} | FullyObs: ${FULLY_OBSERVABLE} | Seeds: $(join_by ',' "${SEEDS[@]}")"
-  log "Eval modes: ${EVAL_POLICY_MODES_CSV} | Summary mode: ${SUMMARY_EVAL_POLICY_MODE}"
+  log "Eval modes: ${EVAL_POLICY_MODES_CSV} | Summary: ${SUMMARY_MODEL_VARIANT}/${SUMMARY_EVAL_POLICY_MODE}"
   log "Eval seed offsets: ${EVAL_SEED_OFFSETS_CSV} | Summary offset: ${SUMMARY_EVAL_SEED_OFFSET} | n_envs: ${N_ENVS} | vec_env: ${VEC_ENV}"
-  log "Periodic eval: scope=${PERIODIC_EVAL_SCOPE} | freq=${PERIODIC_EVAL_FREQ} | save_best_eval=${SAVE_BEST_EVAL_CHECKPOINT} | restore_best_eval=${RESTORE_BEST_EVAL_MODEL} | early_stop=${EARLY_STOP_EVAL_SUCCESS_THRESHOLD:-<off>}"
+  log "PPO: lr=${PPO_LEARNING_RATE} n_steps=${PPO_N_STEPS} batch=${PPO_BATCH_SIZE} epochs=${PPO_N_EPOCHS} clip=${PPO_CLIP_RANGE} clip_vf=${PPO_CLIP_RANGE_VF} ent=${PPO_ENT_COEF} target_kl=${PPO_TARGET_KL}"
+  if [[ -n "${PPO_ENT_COEF_TASK_OVERRIDES_CSV}" ]]; then
+    log "PPO ent_coef overrides: ${PPO_ENT_COEF_TASK_OVERRIDES_CSV}"
+  fi
+  log "Periodic eval: scope=${PERIODIC_EVAL_SCOPE} | freq=${PERIODIC_EVAL_FREQ} | save_best_eval=${SAVE_BEST_EVAL_CHECKPOINT} | eval_best=${EVAL_BEST_EVAL_MODEL_AT_PHASE_END} | restore_best_eval=${RESTORE_BEST_EVAL_MODEL} | early_stop=${EARLY_STOP_EVAL_SUCCESS_THRESHOLD:-<off>}"
   log "Ablaciones planeadas: ${#PLAN_IDS[@]} | Corridas totales: ${TOTAL_RUNS}"
   log "Ablation filter: ${ABLATION_IDS_CSV:-<none>}"
   log "Rank sweep adicional: ${ENABLE_RANK_SWEEP} | Single-task sanity: ${ENABLE_SINGLE_TASK_SANITY} | Only sanity: ${ONLY_SANITY}"
   log "Sanity tasks: ${SANITY_TASKS_CSV:-<preset>}"
   log "Continual tasks: ${CONTINUAL_TASKS_CSV:-<preset>}"
+  if [[ -n "${SANITY_TASKS_CSV}" && "${ENABLE_SINGLE_TASK_SANITY}" != "1" ]]; then
+    log "NOTA: SANITY_TASKS_CSV está definido, pero no se correrán sanities single-task porque ENABLE_SINGLE_TASK_SANITY=0 y RUN_PROFILE!=sanity."
+  fi
 
   run_all
   local analysis_status="ok"

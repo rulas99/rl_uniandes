@@ -139,9 +139,14 @@ def summarize_eval_metrics(
     df: pd.DataFrame,
     primary_eval_seed_offset: Optional[int] = None,
     primary_eval_policy_mode: Optional[str] = None,
+    primary_model_variant: Optional[str] = None,
 ) -> Dict[str, Any]:
     if df.empty:
         return {}
+    if primary_model_variant is not None and "model_variant" in df.columns:
+        df = df[df["model_variant"] == primary_model_variant].copy()
+        if df.empty:
+            return {}
     if primary_eval_policy_mode is not None and "eval_policy_mode" in df.columns:
         df = df[df["eval_policy_mode"] == primary_eval_policy_mode].copy()
         if df.empty:
@@ -320,6 +325,15 @@ def discover_run_record(run_dir: Path, manifest_row: Optional[pd.Series] = None)
             summary.get("summary_eval_seed_offset", args.get("summary_eval_seed_offset", 1000)),
             default=1000,
         ),
+        "summary_model_variant": str(
+            summary.get("summary_model_variant", args.get("summary_model_variant", "current"))
+        ),
+        "eval_best_eval_model_at_phase_end": bool(
+            summary.get(
+                "eval_best_eval_model_at_phase_end",
+                args.get("eval_best_eval_model_at_phase_end", False),
+            )
+        ),
         "adapter_rank": args.get("adapter_rank"),
         "adapter_alpha": args.get("adapter_alpha"),
         "adapter_warmup_tasks": args.get("adapter_warmup_tasks"),
@@ -352,6 +366,7 @@ def discover_run_record(run_dir: Path, manifest_row: Optional[pd.Series] = None)
             eval_df,
             primary_eval_seed_offset=record["summary_eval_seed_offset"],
             primary_eval_policy_mode=record["summary_eval_policy_mode"],
+            primary_model_variant=record["summary_model_variant"],
         )
     )
     record.update(summarize_train_metrics(train_df))

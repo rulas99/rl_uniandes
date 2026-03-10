@@ -223,8 +223,16 @@ class GridWorldEnv(gym.Env):
 
         observation = self._get_obs()
         info = self._get_info()
-        # NEW ---- añade flags útiles a info
-        info.update({"hit_obstacle": hit_obstacle, "fell_in_hole": fell_in_hole})
+        info.update(
+            {
+                "is_success": reached_goal,
+                "terminated_reason": (
+                    "goal" if reached_goal else "hole" if fell_in_hole else "ongoing"
+                ),
+                "hit_obstacle": hit_obstacle,
+                "fell_in_hole": fell_in_hole,
+            }
+        )
 
         self.episode_step += 1
 
