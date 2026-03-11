@@ -121,6 +121,12 @@ class SegmentedReplayBuffer:
     def __len__(self) -> int:
         return len(self.recent) + len(self.archive)
 
+    def num_recent(self) -> int:
+        return len(self.recent)
+
+    def num_archive(self) -> int:
+        return len(self.archive)
+
     def add(
         self,
         state: np.ndarray,
@@ -141,13 +147,22 @@ class SegmentedReplayBuffer:
             )
         )
 
-    def on_task_switch(self, archive_frac: float = 0.25) -> None:
+    def on_task_switch(self, archive_frac: float = 0.25, keep_tail: int = 512) -> None:
         recent_list = list(self.recent)
-        if recent_list:
-            archive_count = max(1, int(round(len(recent_list) * float(archive_frac))))
-            for transition in random.sample(recent_list, k=min(archive_count, len(recent_list))):
+        if not recent_list:
+            return
+
+        keep_tail = max(0, int(keep_tail))
+        if keep_tail >= len(recent_list):
+            return
+
+        tail = recent_list[-keep_tail:] if keep_tail > 0 else []
+        archive_pool = recent_list[:-keep_tail] if keep_tail > 0 else recent_list
+        if archive_pool:
+            archive_count = max(1, int(round(len(archive_pool) * float(archive_frac))))
+            for transition in random.sample(archive_pool, k=min(archive_count, len(archive_pool))):
                 self.archive.append(transition)
-        self.recent.clear()
+        self.recent = deque(tail, maxlen=self.recent_capacity)
 
     def sample(
         self,

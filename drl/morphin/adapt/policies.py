@@ -14,6 +14,8 @@ class AdaptationConfig:
     eps_start: float = 1.0
     eps_end: float = 0.05
     eps_decay_steps: int = 80_000
+    eps_reset_value: float | None = None
+    eps_decay_steps_after_switch: int | None = None
     epsilon_reset_on_switch: bool = False
     td_adaptive_loss: bool = False
     alpha_max_mult: float = 3.0
@@ -29,13 +31,17 @@ class AdaptationConfig:
     recent_mix_start: float = 0.8
     recent_mix_end: float = 0.5
     post_switch_steps: int = 5_000
+    segmented_keep_tail: int = 512
+    segmented_recent_only_steps: int = 1_000
+    segmented_min_recent_samples: int = 256
 
 
 class EpsilonScheduler:
     def __init__(self, start: float, end: float, decay_steps: int) -> None:
         self.start = float(start)
         self.end = float(end)
-        self.decay_steps = max(1, int(decay_steps))
+        self.base_decay_steps = max(1, int(decay_steps))
+        self.decay_steps = self.base_decay_steps
         self.steps = 0
 
     def value(self) -> float:
@@ -45,8 +51,20 @@ class EpsilonScheduler:
     def step(self) -> None:
         self.steps += 1
 
+    def reset(self, value: float | None = None, decay_steps: int | None = None) -> None:
+        self.decay_steps = max(1, int(decay_steps)) if decay_steps is not None else self.base_decay_steps
+        if value is None:
+            self.steps = 0
+            return
+        if self.start == self.end:
+            self.steps = 0
+            return
+        frac = (float(value) - self.start) / (self.end - self.start)
+        frac = min(1.0, max(0.0, frac))
+        self.steps = int(round(frac * self.decay_steps))
+
     def reset_to_max(self) -> None:
-        self.steps = 0
+        self.reset(value=None, decay_steps=None)
 
 
 class AdaptationController:
@@ -75,7 +93,7 @@ class AdaptationController:
 
     @property
     def uses_oracle_boundaries(self) -> bool:
-        return self.config.method in {"oracle_reset", "morphin_lite", "oracle_segmented"}
+        return self.config.method in {"oracle_reset", "morphin_lite", "oracle_segmented", "oracle_segmented_td"}
 
     @property
     def uses_detector(self) -> bool:
@@ -90,7 +108,10 @@ class AdaptationController:
 
     def on_task_switch(self, replay_buffer: Any) -> dict[str, Any]:
         if self.config.epsilon_reset_on_switch:
-            self.epsilon_scheduler.reset_to_max()
+            self.epsilon_scheduler.reset(
+                value=self.config.eps_reset_value,
+                decay_steps=self.config.eps_decay_steps_after_switch,
+            )
         self.steps_since_switch = 0
         self._apply_replay_switch(replay_buffer)
         return {"switch_trigger": "oracle"}
@@ -125,9 +146,16 @@ class AdaptationController:
 
         self.num_detections += 1
         if self.config.epsilon_reset_on_switch:
-            self.epsilon_scheduler.reset_to_max()
+            self.epsilon_scheduler.reset(
+                value=self.config.eps_reset_value,
+                decay_steps=self.config.eps_decay_steps_after_switch,
+            )
         self.steps_since_switch = 0
         self.detector.reset()
+        self.ema_signal = None
+        self.last_signal_raw = signal
+        self.last_signal_ema = signal
+        self.last_ph_stat = 0.0
         self._apply_replay_switch(replay_buffer)
         return True
 
@@ -137,14 +165,30 @@ class AdaptationController:
         return 1.0 + (self.config.alpha_max_mult - 1.0) * torch.sigmoid(td_abs - self.config.td_k)
 
     def segmented_recent_fraction(self) -> float:
-        frac = min(1.0, self.steps_since_switch / max(1, self.config.post_switch_steps))
+        if self.steps_since_switch < self.config.segmented_recent_only_steps:
+            return 1.0
+        effective_steps = self.steps_since_switch - self.config.segmented_recent_only_steps
+        frac = min(1.0, effective_steps / max(1, self.config.post_switch_steps))
         return self.config.recent_mix_start + frac * (self.config.recent_mix_end - self.config.recent_mix_start)
+
+    def can_update(self, replay_buffer: Any, batch_size: int) -> bool:
+        if len(replay_buffer) < int(batch_size):
+            return False
+        if self.config.replay_policy != "segmented":
+            return True
+        if self.steps_since_switch < self.config.post_switch_steps:
+            if hasattr(replay_buffer, "num_recent"):
+                return int(replay_buffer.num_recent()) >= int(self.config.segmented_min_recent_samples)
+        return True
 
     def _apply_replay_switch(self, replay_buffer: Any) -> None:
         if self.config.replay_policy == "keep_all":
             return
         if self.config.replay_policy == "segmented":
-            replay_buffer.on_task_switch(archive_frac=self.config.archive_frac)
+            replay_buffer.on_task_switch(
+                archive_frac=self.config.archive_frac,
+                keep_tail=self.config.segmented_keep_tail,
+            )
             return
         replay_buffer.on_task_switch(
             policy=self.config.replay_policy,

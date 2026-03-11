@@ -15,8 +15,10 @@ import torch
 from .agents import DDQNAgent, DDQNConfig, SegmentedReplayBuffer, UniformReplayBuffer
 from .adapt import AdaptationConfig, AdaptationController
 from .analysis_metrics import compute_detection_metrics
+from .analysis_metrics import compute_eval_switch_metrics
+from .analysis_metrics import compute_eval_time_to_threshold
 from .analysis_metrics import compute_overall_time_to_threshold
-from .analysis_metrics import compute_switch_metrics
+from .analysis_metrics import compute_train_switch_metrics
 from .envs.gridworld_switch import (
     BENCHMARK_LIBRARY,
     BENCHMARK_DEFAULT_OBS_MODE,
@@ -35,6 +37,7 @@ METHOD_CHOICES = (
     "morphin_lite",
     "detector_reset_only",
     "oracle_segmented",
+    "oracle_segmented_td",
     "morphin_full",
     "morphin_segmented",
 )
@@ -63,7 +66,7 @@ def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(description="DDQN/MORPHIN continual adaptation runner")
     parser.add_argument("--mode", choices=["continual", "scratch_task"], default="continual")
     parser.add_argument("--method", choices=METHOD_CHOICES, default="ddqn_vanilla")
-    parser.add_argument("--benchmark", choices=sorted(BENCHMARK_LIBRARY), default="gw_goal_switch_aba_v1")
+    parser.add_argument("--benchmark", choices=sorted(BENCHMARK_LIBRARY), default="gw_goal_conditioned_balanced_aba_v1")
     parser.add_argument("--task-id", choices=sorted(TASK_LIBRARY), default=None)
     parser.add_argument("--task-ids-csv", type=str, default="")
     parser.add_argument("--episodes-per-task", type=int, default=400)
@@ -89,6 +92,8 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--eps-start", type=float, default=1.0)
     parser.add_argument("--eps-end", type=float, default=0.05)
     parser.add_argument("--eps-decay-steps", type=int, default=8000)
+    parser.add_argument("--eps-reset-value", type=float, default=0.4)
+    parser.add_argument("--eps-decay-steps-after-switch", type=int, default=2000)
     parser.add_argument("--alpha-max-mult", type=float, default=3.0)
     parser.add_argument("--td-k", type=float, default=1.0)
     parser.add_argument("--detector-signal", choices=["return", "success"], default="return")
@@ -101,8 +106,13 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--recent-mix-start", type=float, default=0.8)
     parser.add_argument("--recent-mix-end", type=float, default=0.5)
     parser.add_argument("--post-switch-steps", type=int, default=5000)
+    parser.add_argument("--segmented-keep-tail", type=int, default=512)
+    parser.add_argument("--segmented-recent-only-steps", type=int, default=1000)
+    parser.add_argument("--segmented-min-recent-samples", type=int, default=256)
 
     parser.add_argument("--eval-every-episodes", type=int, default=25)
+    parser.add_argument("--eval-dense-every-episodes", type=int, default=5)
+    parser.add_argument("--eval-dense-window-episodes", type=int, default=30)
     parser.add_argument("--eval-episodes", type=int, default=10)
     parser.add_argument("--eval-bank-base-seed", type=int, default=10000)
     parser.add_argument("--success-threshold", type=float, default=0.8)
@@ -150,6 +160,10 @@ def default_adaptation_config(args: argparse.Namespace) -> AdaptationConfig:
         replay_policy = "segmented"
         epsilon_reset_on_switch = True
         td_adaptive = False
+    elif args.method == "oracle_segmented_td":
+        replay_policy = "segmented"
+        epsilon_reset_on_switch = True
+        td_adaptive = True
     elif args.method == "morphin_full":
         replay_policy = "keep_all"
         epsilon_reset_on_switch = True
@@ -166,6 +180,8 @@ def default_adaptation_config(args: argparse.Namespace) -> AdaptationConfig:
         eps_start=args.eps_start,
         eps_end=args.eps_end,
         eps_decay_steps=args.eps_decay_steps,
+        eps_reset_value=args.eps_reset_value,
+        eps_decay_steps_after_switch=args.eps_decay_steps_after_switch,
         epsilon_reset_on_switch=epsilon_reset_on_switch,
         td_adaptive_loss=td_adaptive,
         alpha_max_mult=args.alpha_max_mult,
@@ -181,6 +197,9 @@ def default_adaptation_config(args: argparse.Namespace) -> AdaptationConfig:
         recent_mix_start=args.recent_mix_start,
         recent_mix_end=args.recent_mix_end,
         post_switch_steps=args.post_switch_steps,
+        segmented_keep_tail=args.segmented_keep_tail,
+        segmented_recent_only_steps=args.segmented_recent_only_steps,
+        segmented_min_recent_samples=args.segmented_min_recent_samples,
     )
 
 
@@ -227,6 +246,62 @@ def build_eval_seed_bank(
     return bank
 
 
+def should_run_eval(
+    episode_idx: int,
+    switch_episodes: list[int],
+    base_every: int,
+    dense_every: int,
+    dense_window: int,
+) -> bool:
+    near_switch = any(
+        switch_episode <= episode_idx < (switch_episode + dense_window)
+        for switch_episode in switch_episodes
+    )
+    frequency = dense_every if near_switch else base_every
+    if frequency <= 0:
+        return False
+    return (episode_idx + 1) % frequency == 0
+
+
+def trace_greedy_rollout(
+    agent: DDQNAgent,
+    task: GridWorldTaskSpec,
+    obs_mode: str,
+    seed: int,
+    max_steps: int,
+) -> dict[str, object]:
+    env = make_gridworld_env(task, seed=seed, max_episode_steps=max_steps)
+    obs, _ = env.reset(seed=seed, options=task.reset_options())
+    state = obs_to_state(obs, task=task, obs_mode=obs_mode)
+    trace: list[dict[str, object]] = []
+    for step_idx in range(max_steps):
+        action = agent.select_action(state, epsilon=0.0, greedy=True)
+        next_obs, reward, terminated, truncated, info = env.step(action)
+        trace.append(
+            {
+                "t": step_idx,
+                "agent": [int(obs["agent"][0]), int(obs["agent"][1])],
+                "action": int(action),
+                "reward": float(reward),
+                "done": bool(terminated or truncated),
+                "success": bool(info.get("is_success", False)),
+                "terminated_reason": str(info.get("terminated_reason", "ongoing")),
+            }
+        )
+        if bool(terminated or truncated):
+            break
+        obs = next_obs
+        state = obs_to_state(obs, task=task, obs_mode=obs_mode)
+    env.close()
+    return {
+        "task_id": task.task_id,
+        "seed": int(seed),
+        "success": bool(trace[-1]["success"]) if trace else False,
+        "steps": len(trace),
+        "trace": trace,
+    }
+
+
 def evaluate_task(
     agent: DDQNAgent,
     task: GridWorldTaskSpec,
@@ -234,7 +309,11 @@ def evaluate_task(
     eval_seeds: list[int],
     max_steps: int,
 ) -> dict[str, float]:
-    env = make_gridworld_env(task, seed=eval_seeds[0] if eval_seeds else None)
+    env = make_gridworld_env(
+        task,
+        seed=eval_seeds[0] if eval_seeds else None,
+        max_episode_steps=max_steps,
+    )
     returns: list[float] = []
     successes: list[float] = []
     steps_taken: list[int] = []
@@ -293,17 +372,22 @@ def summarize_run(
     task_sequence: list[GridWorldTaskSpec],
     episode_rows: list[dict[str, object]],
     eval_rows: list[dict[str, object]],
-    switch_rows: list[dict[str, object]],
+    switch_rows_eval: list[dict[str, object]],
+    switch_rows_train: list[dict[str, object]],
     detection_rows: list[dict[str, object]],
     false_alarm_count: int,
     obs_mode: str,
     total_steps: int,
     adaptation_controller: AdaptationController,
 ) -> dict[str, object]:
-    overall_time_to_threshold = compute_overall_time_to_threshold(
+    overall_time_to_threshold_train = compute_overall_time_to_threshold(
         episode_rows=episode_rows,
         threshold=args.success_threshold,
         ema_alpha=0.1,
+    )
+    overall_time_to_threshold_eval = compute_eval_time_to_threshold(
+        eval_rows=eval_rows,
+        threshold=args.success_threshold,
     )
     final_eval_rows = [row for row in eval_rows if str(row["eval_scope"]) == "seen_tasks_end"]
     final_eval_mean = math.nan
@@ -329,7 +413,9 @@ def summarize_run(
         "total_steps": int(total_steps),
         "avg_episode_return": float(np.mean([float(row["episode_return"]) for row in episode_rows])),
         "avg_episode_success": float(np.mean([float(row["success"]) for row in episode_rows])),
-        "overall_time_to_threshold": overall_time_to_threshold,
+        "overall_time_to_threshold_train_episodes": overall_time_to_threshold_train,
+        "overall_time_to_threshold_eval_episodes": overall_time_to_threshold_eval["time_to_threshold_eval_episodes"],
+        "overall_time_to_threshold_eval_steps": overall_time_to_threshold_eval["time_to_threshold_eval_steps"],
         "final_seen_success_mean": final_eval_mean,
         "current_task_final_success": current_task_final_success,
         "num_oracle_switches": int(sum(1 for row in episode_rows if row["switch_event"] == "oracle")),
@@ -340,24 +426,55 @@ def summarize_run(
             if any(row["delay_episodes"] is not None for row in detection_rows)
             else math.nan
         ),
-        "switch_recovery_auc_success_mean": (
-            float(np.nanmean([float(row["recovery_auc_success"]) for row in switch_rows]))
-            if switch_rows
+        "switch_recovery_auc_success_eval_mean": (
+            float(np.nanmean([float(row["recovery_auc_success_eval"]) for row in switch_rows_eval]))
+            if switch_rows_eval
             else math.nan
         ),
-        "switch_time_to_threshold_mean": (
-            float(np.nanmean([float(row["time_to_threshold"]) for row in switch_rows if row["time_to_threshold"] is not None]))
-            if any(row["time_to_threshold"] is not None for row in switch_rows)
+        "switch_time_to_threshold_eval_episodes_mean": (
+            float(
+                np.nanmean(
+                    [
+                        float(row["time_to_threshold_eval_episodes"])
+                        for row in switch_rows_eval
+                        if row["time_to_threshold_eval_episodes"] is not None
+                    ]
+                )
+            )
+            if any(row["time_to_threshold_eval_episodes"] is not None for row in switch_rows_eval)
             else math.nan
         ),
-        "adaptation_gain_vs_scratch_mean": (
-            float(np.nanmean([float(row["adaptation_gain_vs_scratch"]) for row in switch_rows]))
-            if any(not math.isnan(float(row["adaptation_gain_vs_scratch"])) for row in switch_rows)
+        "switch_time_to_threshold_eval_steps_mean": (
+            float(
+                np.nanmean(
+                    [
+                        float(row["time_to_threshold_eval_steps"])
+                        for row in switch_rows_eval
+                        if row["time_to_threshold_eval_steps"] is not None
+                    ]
+                )
+            )
+            if any(row["time_to_threshold_eval_steps"] is not None for row in switch_rows_eval)
             else math.nan
         ),
-        "shock_drop_mean": (
-            float(np.nanmean([float(row["shock_drop"]) for row in switch_rows]))
-            if any(not math.isnan(float(row["shock_drop"])) for row in switch_rows)
+        "adaptation_gain_vs_scratch_steps_mean": (
+            float(np.nanmean([float(row["adaptation_gain_vs_scratch_steps"]) for row in switch_rows_eval]))
+            if any(not math.isnan(float(row["adaptation_gain_vs_scratch_steps"])) for row in switch_rows_eval)
+            else math.nan
+        ),
+        "adaptation_gain_vs_scratch_episodes_mean": (
+            float(np.nanmean([float(row["adaptation_gain_vs_scratch_episodes"]) for row in switch_rows_eval]))
+            if any(not math.isnan(float(row["adaptation_gain_vs_scratch_episodes"])) for row in switch_rows_eval)
+            else math.nan
+        ),
+        "initial_gap_vs_scratch_mean": (
+            float(np.nanmean([float(row["initial_gap_vs_scratch"]) for row in switch_rows_eval]))
+            if any(not math.isnan(float(row["initial_gap_vs_scratch"])) for row in switch_rows_eval)
+            else math.nan
+        ),
+        "train_switch_recovery_auc_success_mean": (
+            float(np.nanmean([float(row["recovery_auc_success"]) for row in switch_rows_train]))
+            if switch_rows_train
             else math.nan
         ),
     }
@@ -387,7 +504,11 @@ def main() -> int:
     config_dump["task_sequence"] = [task.to_dict() for task in task_sequence]
     (run_dir / "config.json").write_text(json.dumps(config_dump, indent=2))
 
-    bootstrap_env = make_gridworld_env(task_sequence[0], seed=args.seed)
+    bootstrap_env = make_gridworld_env(
+        task_sequence[0],
+        seed=args.seed,
+        max_episode_steps=args.max_steps_per_episode,
+    )
     bootstrap_obs, _ = bootstrap_env.reset(seed=args.seed, options=task_sequence[0].reset_options())
     bootstrap_state = obs_to_state(bootstrap_obs, task=task_sequence[0], obs_mode=obs_mode)
     obs_dim = int(np.asarray(bootstrap_state, dtype=np.float32).reshape(-1).shape[0])
@@ -417,8 +538,10 @@ def main() -> int:
     total_episodes = args.episodes_per_task * len(task_sequence)
     episode_rows: list[dict[str, object]] = []
     eval_rows: list[dict[str, object]] = []
+    update_rows: list[dict[str, object]] = []
     switch_episodes: list[int] = []
     detector_rows: list[dict[str, object]] = []
+    rollout_rows: list[dict[str, object]] = []
     total_steps = 0
     env = None
     current_env_task_id = None
@@ -426,7 +549,11 @@ def main() -> int:
     for episode_idx in range(total_episodes):
         task_idx = min(episode_idx // args.episodes_per_task, len(task_sequence) - 1)
         task = task_sequence[task_idx]
-        actual_switch = episode_idx > 0 and task_sequence[task_idx - 1].task_id != task.task_id
+        prev_task = None
+        if episode_idx > 0:
+            prev_task_idx = min((episode_idx - 1) // args.episodes_per_task, len(task_sequence) - 1)
+            prev_task = task_sequence[prev_task_idx]
+        actual_switch = prev_task is not None and prev_task.task_id != task.task_id
         switch_event = "none"
         if actual_switch:
             switch_episodes.append(episode_idx)
@@ -448,7 +575,11 @@ def main() -> int:
         if env is None or current_env_task_id != task.task_id:
             if env is not None:
                 env.close()
-            env = make_gridworld_env(task, seed=args.seed + episode_idx)
+            env = make_gridworld_env(
+                task,
+                seed=args.seed + episode_idx,
+                max_episode_steps=args.max_steps_per_episode,
+            )
             current_env_task_id = task.task_id
 
         obs, _ = env.reset(seed=args.seed + episode_idx, options=task.reset_options())
@@ -486,7 +617,7 @@ def main() -> int:
 
             if (
                 total_steps >= args.warmup_steps
-                and len(replay_buffer) >= args.batch_size
+                and controller.can_update(replay_buffer, batch_size=args.batch_size)
                 and total_steps % args.train_freq == 0
             ):
                 sample_kwargs: dict[str, object] = {}
@@ -502,6 +633,33 @@ def main() -> int:
                 td_abs_mean_values.append(stats["td_abs_mean"])
                 td_abs_max_values.append(stats["td_abs_max"])
                 loss_values.append(stats["loss"])
+                update_rows.append(
+                    {
+                        "global_step": total_steps,
+                        "episode": episode_idx + 1,
+                        "task_id": task.task_id,
+                        "loss": stats["loss"],
+                        "td_abs_mean": stats["td_abs_mean"],
+                        "td_abs_max": stats["td_abs_max"],
+                        "q_sa_mean": stats["q_sa_mean"],
+                        "target_q_mean": stats["target_q_mean"],
+                        "epsilon": controller.current_epsilon(),
+                        "p_recent": (
+                            controller.segmented_recent_fraction()
+                            if adaptation.replay_policy == "segmented"
+                            else math.nan
+                        ),
+                        "recent_size": (
+                            replay_buffer.num_recent() if hasattr(replay_buffer, "num_recent") else math.nan
+                        ),
+                        "archive_size": (
+                            replay_buffer.num_archive() if hasattr(replay_buffer, "num_archive") else math.nan
+                        ),
+                        "ph_signal_raw": controller.last_signal_raw,
+                        "ph_signal_ema": controller.last_signal_ema,
+                        "ph_stat": controller.last_ph_stat,
+                    }
+                )
 
             if done:
                 success = float(bool(info.get("is_success", False)))
@@ -560,7 +718,13 @@ def main() -> int:
         )
 
         task_boundary_end = ((episode_idx + 1) % args.episodes_per_task == 0) or (episode_idx == total_episodes - 1)
-        do_eval = args.eval_every_episodes > 0 and ((episode_idx + 1) % args.eval_every_episodes == 0)
+        do_eval = should_run_eval(
+            episode_idx=episode_idx,
+            switch_episodes=switch_episodes,
+            base_every=args.eval_every_episodes,
+            dense_every=args.eval_dense_every_episodes,
+            dense_window=args.eval_dense_window_episodes,
+        )
         if do_eval or task_boundary_end:
             current_metrics = evaluate_task(
                 agent=agent,
@@ -603,6 +767,21 @@ def main() -> int:
                             **seen_metrics,
                         }
                     )
+                for seen_task_id in seen_tasks:
+                    seen_task = TASK_LIBRARY[seen_task_id]
+                    rollout_rows.append(
+                        {
+                            "episode": episode_idx + 1,
+                            "eval_scope": "seen_tasks_end",
+                            **trace_greedy_rollout(
+                                agent=agent,
+                                task=seen_task,
+                                obs_mode=obs_mode,
+                                seed=eval_seed_bank[seen_task_id][0],
+                                max_steps=args.max_steps_per_episode,
+                            ),
+                        }
+                    )
 
         if (episode_idx + 1) % 50 == 0 or episode_idx == total_episodes - 1:
             print(
@@ -614,13 +793,20 @@ def main() -> int:
     if env is not None:
         env.close()
 
-    switch_rows = compute_switch_metrics(
+    train_switch_rows = compute_train_switch_metrics(
         episode_rows=episode_rows,
         switch_episodes=switch_episodes,
         recovery_window=args.recovery_window,
         threshold=args.success_threshold,
         ema_alpha=0.1,
         scratch_refs=scratch_refs,
+    )
+    eval_switch_rows = compute_eval_switch_metrics(
+        eval_rows=eval_rows,
+        switch_episodes=switch_episodes,
+        threshold=args.success_threshold,
+        scratch_refs=scratch_refs,
+        episode_rows=episode_rows,
     )
     detection_rows, false_alarm_rows = compute_detection_metrics(
         switch_episodes=switch_episodes,
@@ -634,7 +820,8 @@ def main() -> int:
         task_sequence=task_sequence,
         episode_rows=episode_rows,
         eval_rows=eval_rows,
-        switch_rows=switch_rows,
+        switch_rows_eval=eval_switch_rows,
+        switch_rows_train=train_switch_rows,
         detection_rows=detection_rows,
         false_alarm_count=len(false_alarm_rows),
         obs_mode=obs_mode,
@@ -644,16 +831,22 @@ def main() -> int:
 
     write_csv(run_dir / "episode_metrics.csv", episode_rows)
     write_csv(run_dir / "eval_metrics.csv", eval_rows)
-    write_csv(run_dir / "switch_metrics.csv", switch_rows)
+    write_csv(run_dir / "update_metrics.csv", update_rows)
+    write_csv(run_dir / "switch_metrics_train.csv", train_switch_rows)
+    write_csv(run_dir / "switch_metrics.csv", eval_switch_rows)
     write_csv(run_dir / "detector_events.csv", detector_rows)
     write_csv(run_dir / "detection_metrics.csv", detection_rows)
+    with (run_dir / "canonical_rollouts.jsonl").open("w") as handle:
+        for row in rollout_rows:
+            handle.write(json.dumps(row) + "\n")
     (run_dir / "summary.json").write_text(json.dumps(summary, indent=2))
     agent.save(run_dir / "model_final.pt")
 
     if args.mode == "scratch_task":
         scratch_summary = {
             str(task_sequence[0].task_id): {
-                "time_to_threshold": summary["overall_time_to_threshold"],
+                "time_to_threshold_eval_episodes": summary["overall_time_to_threshold_eval_episodes"],
+                "time_to_threshold_eval_steps": summary["overall_time_to_threshold_eval_steps"],
                 "avg_episode_success": summary["avg_episode_success"],
                 "final_seen_success_mean": summary["final_seen_success_mean"],
             }

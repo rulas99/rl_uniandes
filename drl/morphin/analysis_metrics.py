@@ -39,7 +39,31 @@ def compute_overall_time_to_threshold(
     return int(threshold_index + 1)
 
 
-def compute_switch_metrics(
+def compute_eval_time_to_threshold(
+    eval_rows: list[dict[str, object]],
+    threshold: float,
+) -> dict[str, int | None]:
+    current_rows = [row for row in eval_rows if str(row.get("eval_scope")) == "current_task"]
+    if not current_rows:
+        return {
+            "time_to_threshold_eval_episodes": None,
+            "time_to_threshold_eval_steps": None,
+        }
+    current_rows = sorted(current_rows, key=lambda row: (int(row["episode"]), int(row["global_step"])))
+    success = np.asarray([float(row["success_rate"]) for row in current_rows], dtype=np.float32)
+    threshold_index = first_threshold_index(success, threshold=threshold)
+    if threshold_index is None:
+        return {
+            "time_to_threshold_eval_episodes": None,
+            "time_to_threshold_eval_steps": None,
+        }
+    return {
+        "time_to_threshold_eval_episodes": int(current_rows[threshold_index]["episode"]),
+        "time_to_threshold_eval_steps": int(current_rows[threshold_index]["global_step"]),
+    }
+
+
+def compute_train_switch_metrics(
     episode_rows: list[dict[str, object]],
     switch_episodes: list[int],
     recovery_window: int,
@@ -71,7 +95,11 @@ def compute_switch_metrics(
         adaptation_gain = math.nan
         shock_drop = math.nan
         if scratch_refs and task_id in scratch_refs:
-            scratch_time = scratch_refs[task_id].get("time_to_threshold")
+            scratch_time = (
+                scratch_refs[task_id].get("time_to_threshold_eval_episodes")
+                if scratch_refs[task_id].get("time_to_threshold_eval_episodes") is not None
+                else scratch_refs[task_id].get("time_to_threshold")
+            )
             scratch_final_success = scratch_refs[task_id].get("final_seen_success_mean")
             if scratch_time is not None and time_to_threshold and time_to_threshold > 0:
                 adaptation_gain = float(scratch_time) / float(time_to_threshold)
@@ -91,6 +119,89 @@ def compute_switch_metrics(
                 "adaptation_gain_vs_scratch": adaptation_gain,
                 "scratch_time_to_threshold": scratch_time,
                 "scratch_final_success_mean": scratch_final_success,
+            }
+        )
+    return switch_rows
+
+
+def compute_eval_switch_metrics(
+    eval_rows: list[dict[str, object]],
+    switch_episodes: list[int],
+    threshold: float,
+    scratch_refs: dict[str, dict[str, float]] | None = None,
+    episode_rows: list[dict[str, object]] | None = None,
+) -> list[dict[str, object]]:
+    if not eval_rows:
+        return []
+    current_rows = [
+        row for row in eval_rows if str(row.get("eval_scope")) == "current_task"
+    ]
+    current_rows = sorted(current_rows, key=lambda row: (int(row["episode"]), int(row["global_step"])))
+    switch_step_map: dict[int, int] = {}
+    if episode_rows:
+        for switch_episode in switch_episodes:
+            if switch_episode <= 0:
+                switch_step_map[int(switch_episode)] = 0
+            elif switch_episode - 1 < len(episode_rows):
+                switch_step_map[int(switch_episode)] = int(episode_rows[switch_episode - 1]["global_step"])
+            else:
+                switch_step_map[int(switch_episode)] = 0
+    switch_rows: list[dict[str, object]] = []
+
+    for switch_idx, switch_episode in enumerate(switch_episodes):
+        segment_start_episode = int(switch_episode + 1)
+        next_switch_episode = switch_episodes[switch_idx + 1] if switch_idx + 1 < len(switch_episodes) else None
+        segment_end_exclusive = None if next_switch_episode is None else int(next_switch_episode + 1)
+        block = [
+            row
+            for row in current_rows
+            if int(row["episode"]) >= segment_start_episode
+            and (segment_end_exclusive is None or int(row["episode"]) < segment_end_exclusive)
+        ]
+        if not block:
+            continue
+
+        task_id = str(block[0]["task_id"])
+        success = np.asarray([float(row["success_rate"]) for row in block], dtype=np.float32)
+        threshold_index = first_threshold_index(success, threshold=threshold)
+        time_to_threshold_eval_episodes = None
+        time_to_threshold_eval_steps = None
+        switch_global_step = int(switch_step_map.get(int(switch_episode), 0))
+        if threshold_index is not None:
+            time_to_threshold_eval_episodes = int(block[threshold_index]["episode"]) - int(switch_episode)
+            time_to_threshold_eval_steps = int(block[threshold_index]["global_step"]) - switch_global_step
+
+        scratch_steps = None
+        scratch_episodes = None
+        scratch_final_success = None
+        adaptation_gain_steps = math.nan
+        adaptation_gain_episodes = math.nan
+        initial_gap_vs_scratch = math.nan
+        if scratch_refs and task_id in scratch_refs:
+            scratch_steps = scratch_refs[task_id].get("time_to_threshold_eval_steps")
+            scratch_episodes = scratch_refs[task_id].get("time_to_threshold_eval_episodes")
+            scratch_final_success = scratch_refs[task_id].get("final_seen_success_mean")
+            if scratch_steps is not None and time_to_threshold_eval_steps and time_to_threshold_eval_steps > 0:
+                adaptation_gain_steps = float(scratch_steps) / float(time_to_threshold_eval_steps)
+            if scratch_episodes is not None and time_to_threshold_eval_episodes and time_to_threshold_eval_episodes > 0:
+                adaptation_gain_episodes = float(scratch_episodes) / float(time_to_threshold_eval_episodes)
+            if scratch_final_success is not None:
+                initial_gap_vs_scratch = float(scratch_final_success) - float(success[0])
+
+        switch_rows.append(
+            {
+                "switch_episode": segment_start_episode,
+                "task_id": task_id,
+                "segment_eval_points": int(len(block)),
+                "recovery_auc_success_eval": float(np.mean(success)),
+                "time_to_threshold_eval_episodes": time_to_threshold_eval_episodes,
+                "time_to_threshold_eval_steps": time_to_threshold_eval_steps,
+                "adaptation_gain_vs_scratch_steps": adaptation_gain_steps,
+                "adaptation_gain_vs_scratch_episodes": adaptation_gain_episodes,
+                "scratch_time_to_threshold_eval_steps": scratch_steps,
+                "scratch_time_to_threshold_eval_episodes": scratch_episodes,
+                "scratch_final_success_mean": scratch_final_success,
+                "initial_gap_vs_scratch": initial_gap_vs_scratch,
             }
         )
     return switch_rows

@@ -5,7 +5,7 @@ ROOT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 PROJECT_ROOT="$(cd "$ROOT_DIR/../../../.." && pwd)"
 PYTHON_BIN="${PYTHON_BIN:-python3}"
 RUN_PROFILE="${RUN_PROFILE:-tier0_quick}"
-BENCHMARK="${BENCHMARK:-gw_hidden_goal_aba_v1}"
+BENCHMARK="${BENCHMARK:-gw_goal_conditioned_balanced_aba_v1}"
 SEEDS_CSV="${SEEDS_CSV:-42,43,44}"
 LOG_ROOT="${LOG_ROOT:-$ROOT_DIR/logs/morphin_gridworld}"
 METHODS_CSV="${METHODS_CSV:-}"
@@ -60,9 +60,17 @@ case "$BENCHMARK" in
     DEFAULT_OBS_MODE="agent_only"
     DEFAULT_SCRATCH_TASKS="gw_goal_a,gw_goal_b"
     ;;
+  gw_hidden_goal_balanced_aba_v1)
+    DEFAULT_OBS_MODE="agent_only"
+    DEFAULT_SCRATCH_TASKS="gw_goal_bal_a,gw_goal_bal_b"
+    ;;
   gw_goal_conditioned_aba_v1|gw_goal_switch_aba_v1)
     DEFAULT_OBS_MODE="agent_target"
     DEFAULT_SCRATCH_TASKS="gw_goal_a,gw_goal_b"
+    ;;
+  gw_goal_conditioned_balanced_aba_v1)
+    DEFAULT_OBS_MODE="agent_target"
+    DEFAULT_SCRATCH_TASKS="gw_goal_bal_a,gw_goal_bal_b"
     ;;
   gw_goal_switch_abca_v1)
     DEFAULT_OBS_MODE="agent_target"
@@ -85,12 +93,20 @@ TAU="${TAU:-0.005}"
 GAMMA="${GAMMA:-0.99}"
 SUCCESS_THRESHOLD="${SUCCESS_THRESHOLD:-0.8}"
 DETECTOR_MAX_DELAY_EPISODES="${DETECTOR_MAX_DELAY_EPISODES:-25}"
+MAX_STEPS_PER_EPISODE="${MAX_STEPS_PER_EPISODE:-150}"
+EVAL_DENSE_EVERY_EPISODES="${EVAL_DENSE_EVERY_EPISODES:-1}"
+EVAL_DENSE_WINDOW_EPISODES="${EVAL_DENSE_WINDOW_EPISODES:-25}"
+SEGMENTED_KEEP_TAIL="${SEGMENTED_KEEP_TAIL:-512}"
+SEGMENTED_RECENT_ONLY_STEPS="${SEGMENTED_RECENT_ONLY_STEPS:-1000}"
+SEGMENTED_MIN_RECENT_SAMPLES="${SEGMENTED_MIN_RECENT_SAMPLES:-256}"
+EPS_RESET_VALUE="${EPS_RESET_VALUE:-0.4}"
+EPS_DECAY_STEPS_AFTER_SWITCH="${EPS_DECAY_STEPS_AFTER_SWITCH:-2000}"
 
 if [[ -z "$METHODS_CSV" ]]; then
   if [[ "$RUN_PROFILE" == "scratch" ]]; then
     METHODS_CSV="ddqn_scratch"
   else
-    METHODS_CSV="ddqn_vanilla,oracle_reset,morphin_lite,detector_reset_only,oracle_segmented,morphin_segmented"
+    METHODS_CSV="ddqn_vanilla,oracle_reset,morphin_lite,oracle_segmented,oracle_segmented_td"
   fi
 fi
 
@@ -117,6 +133,8 @@ log "Profile: $RUN_PROFILE | Mode: $MODE | Benchmark: $BENCHMARK | Seeds: $SEEDS
 log "Obs mode: $OBS_MODE | Methods: $METHODS_CSV"
 log "Episodes/task: $EPISODES_PER_TASK | Eval every: $EVAL_EVERY_EPISODES | Eval episodes: $EVAL_EPISODES"
 log "Warmup: $WARMUP_STEPS | Batch: $BATCH_SIZE | Eps decay: $EPS_DECAY_STEPS | Auto scratch refs: $AUTO_BUILD_SCRATCH_REFS"
+log "Switch epsilon reset: value=$EPS_RESET_VALUE decay_steps=$EPS_DECAY_STEPS_AFTER_SWITCH"
+log "Dense eval: every $EVAL_DENSE_EVERY_EPISODES within $EVAL_DENSE_WINDOW_EPISODES eps after switch | Max steps/ep: $MAX_STEPS_PER_EPISODE"
 
 PLAN_CSV="$SESSION_ROOT/experiment_plan.csv"
 MANIFEST_CSV="$SESSION_ROOT/experiment_manifest.csv"
@@ -130,17 +148,25 @@ IFS=',' read -r -a SCRATCH_TASKS <<<"$SCRATCH_TASK_IDS_CSV"
 common_args=(
   --benchmark "$BENCHMARK"
   --episodes-per-task "$EPISODES_PER_TASK"
+  --max-steps-per-episode "$MAX_STEPS_PER_EPISODE"
   --eval-episodes "$EVAL_EPISODES"
   --eval-every-episodes "$EVAL_EVERY_EPISODES"
+  --eval-dense-every-episodes "$EVAL_DENSE_EVERY_EPISODES"
+  --eval-dense-window-episodes "$EVAL_DENSE_WINDOW_EPISODES"
   --obs-mode "$OBS_MODE"
   --warmup-steps "$WARMUP_STEPS"
   --batch-size "$BATCH_SIZE"
   --eps-decay-steps "$EPS_DECAY_STEPS"
+  --eps-reset-value "$EPS_RESET_VALUE"
+  --eps-decay-steps-after-switch "$EPS_DECAY_STEPS_AFTER_SWITCH"
   --learning-rate "$LEARNING_RATE"
   --tau "$TAU"
   --gamma "$GAMMA"
   --success-threshold "$SUCCESS_THRESHOLD"
   --detector-max-delay-episodes "$DETECTOR_MAX_DELAY_EPISODES"
+  --segmented-keep-tail "$SEGMENTED_KEEP_TAIL"
+  --segmented-recent-only-steps "$SEGMENTED_RECENT_ONLY_STEPS"
+  --segmented-min-recent-samples "$SEGMENTED_MIN_RECENT_SAMPLES"
 )
 
 run_scratch_stage() {
@@ -239,12 +265,20 @@ cat >"$SESSION_ROOT/session_config.json" <<JSON
   "task_ids_csv": "$TASK_IDS_CSV",
   "scratch_task_ids_csv": "$SCRATCH_TASK_IDS_CSV",
   "episodes_per_task": $EPISODES_PER_TASK,
+  "max_steps_per_episode": $MAX_STEPS_PER_EPISODE,
   "eval_episodes": $EVAL_EPISODES,
   "eval_every_episodes": $EVAL_EVERY_EPISODES,
+  "eval_dense_every_episodes": $EVAL_DENSE_EVERY_EPISODES,
+  "eval_dense_window_episodes": $EVAL_DENSE_WINDOW_EPISODES,
   "warmup_steps": $WARMUP_STEPS,
   "batch_size": $BATCH_SIZE,
   "eps_decay_steps": $EPS_DECAY_STEPS,
+  "eps_reset_value": $EPS_RESET_VALUE,
+  "eps_decay_steps_after_switch": $EPS_DECAY_STEPS_AFTER_SWITCH,
   "learning_rate": $LEARNING_RATE,
+  "segmented_keep_tail": $SEGMENTED_KEEP_TAIL,
+  "segmented_recent_only_steps": $SEGMENTED_RECENT_ONLY_STEPS,
+  "segmented_min_recent_samples": $SEGMENTED_MIN_RECENT_SAMPLES,
   "auto_build_scratch_refs": $AUTO_BUILD_SCRATCH_REFS,
   "scratch_refs_json": "${SCRATCH_REFS_JSON}"
 }

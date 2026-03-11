@@ -14,6 +14,12 @@ BASE_OBSTACLES = (
     (1, 0),
 )
 
+SYMMETRIC_GOAL_OBSTACLES = (
+    (2, 3),
+    (2, 2),
+    (2, 1),
+)
+
 
 @dataclass(frozen=True)
 class GridWorldTaskSpec:
@@ -63,6 +69,16 @@ TASK_LIBRARY: dict[str, GridWorldTaskSpec] = {
     "gw_goal_a": GridWorldTaskSpec(task_id="gw_goal_a", goal=(0, 0)),
     "gw_goal_b": GridWorldTaskSpec(task_id="gw_goal_b", goal=(4, 0)),
     "gw_goal_c": GridWorldTaskSpec(task_id="gw_goal_c", goal=(4, 4)),
+    "gw_goal_bal_a": GridWorldTaskSpec(
+        task_id="gw_goal_bal_a",
+        goal=(0, 0),
+        obstacles=SYMMETRIC_GOAL_OBSTACLES,
+    ),
+    "gw_goal_bal_b": GridWorldTaskSpec(
+        task_id="gw_goal_bal_b",
+        goal=(4, 0),
+        obstacles=SYMMETRIC_GOAL_OBSTACLES,
+    ),
     "gw_dyn_a": GridWorldTaskSpec(task_id="gw_dyn_a", goal=(0, 0)),
     "gw_dyn_b": GridWorldTaskSpec(
         task_id="gw_dyn_b",
@@ -77,7 +93,9 @@ TASK_LIBRARY: dict[str, GridWorldTaskSpec] = {
 BENCHMARK_LIBRARY: dict[str, list[str]] = {
     "gw_goal_switch_aba_v1": ["gw_goal_a", "gw_goal_b", "gw_goal_a"],
     "gw_hidden_goal_aba_v1": ["gw_goal_a", "gw_goal_b", "gw_goal_a"],
+    "gw_hidden_goal_balanced_aba_v1": ["gw_goal_bal_a", "gw_goal_bal_b", "gw_goal_bal_a"],
     "gw_goal_conditioned_aba_v1": ["gw_goal_a", "gw_goal_b", "gw_goal_a"],
+    "gw_goal_conditioned_balanced_aba_v1": ["gw_goal_bal_a", "gw_goal_bal_b", "gw_goal_bal_a"],
     "gw_goal_switch_abca_v1": ["gw_goal_a", "gw_goal_b", "gw_goal_c", "gw_goal_a"],
     "gw_dynamics_switch_aba_v1": ["gw_dyn_a", "gw_dyn_b", "gw_dyn_a"],
 }
@@ -86,7 +104,9 @@ BENCHMARK_LIBRARY: dict[str, list[str]] = {
 BENCHMARK_DEFAULT_OBS_MODE: dict[str, str] = {
     "gw_goal_switch_aba_v1": "agent_target",
     "gw_hidden_goal_aba_v1": "agent_only",
+    "gw_hidden_goal_balanced_aba_v1": "agent_only",
     "gw_goal_conditioned_aba_v1": "agent_target",
+    "gw_goal_conditioned_balanced_aba_v1": "agent_target",
     "gw_goal_switch_abca_v1": "agent_target",
     "gw_dynamics_switch_aba_v1": "grid_channels",
 }
@@ -118,8 +138,16 @@ def unique_task_ids_for_benchmark(benchmark: str) -> list[str]:
     return ordered
 
 
-def make_gridworld_env(task: GridWorldTaskSpec, seed: int | None = None) -> gym.Env:
-    env = gym.make("entropia/GridWorld-v0", **task.env_kwargs())
+def make_gridworld_env(
+    task: GridWorldTaskSpec,
+    seed: int | None = None,
+    max_episode_steps: int | None = None,
+) -> gym.Env:
+    env = gym.make(
+        "entropia/GridWorld-v0",
+        max_episode_steps=(task.max_episode_steps if max_episode_steps is None else int(max_episode_steps)),
+        **task.env_kwargs(),
+    )
     if seed is not None:
         env.reset(seed=seed, options=task.reset_options())
     return env

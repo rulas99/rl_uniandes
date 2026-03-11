@@ -32,17 +32,30 @@ def main() -> int:
         if not task_sequence:
             continue
         task_id = str(task_sequence[0] if isinstance(task_sequence[0], str) else task_sequence[0]["task_id"])
-        grouped.setdefault(task_id, {"time_to_threshold": [], "final_seen_success_mean": []})
-        if summary.get("overall_time_to_threshold") is not None:
-            grouped[task_id]["time_to_threshold"].append(float(summary["overall_time_to_threshold"]))
+        grouped.setdefault(task_id, {"final_seen_success_mean": []})
+        if summary.get("overall_time_to_threshold_eval_steps") is not None:
+            grouped[task_id].setdefault("time_to_threshold_eval_steps", []).append(
+                float(summary["overall_time_to_threshold_eval_steps"])
+            )
+        if summary.get("overall_time_to_threshold_eval_episodes") is not None:
+            grouped[task_id].setdefault("time_to_threshold_eval_episodes", []).append(
+                float(summary["overall_time_to_threshold_eval_episodes"])
+            )
         if summary.get("final_seen_success_mean") is not None:
             grouped[task_id]["final_seen_success_mean"].append(float(summary["final_seen_success_mean"]))
 
     refs: dict[str, dict[str, float | None]] = {}
     for task_id, values in grouped.items():
         refs[task_id] = {
-            "time_to_threshold": (
-                statistics.median(values["time_to_threshold"]) if values["time_to_threshold"] else None
+            "time_to_threshold_eval_steps": (
+                statistics.median(values.get("time_to_threshold_eval_steps", []))
+                if values.get("time_to_threshold_eval_steps")
+                else None
+            ),
+            "time_to_threshold_eval_episodes": (
+                statistics.median(values.get("time_to_threshold_eval_episodes", []))
+                if values.get("time_to_threshold_eval_episodes")
+                else None
             ),
             "final_seen_success_mean": (
                 statistics.mean(values["final_seen_success_mean"]) if values["final_seen_success_mean"] else None
