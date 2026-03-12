@@ -1,8 +1,7 @@
 from __future__ import annotations
 
 from dataclasses import asdict, dataclass
-
-import gymnasium as gym
+from typing import Any
 
 BASE_OBSTACLES = (
     (3, 4),
@@ -79,6 +78,11 @@ TASK_LIBRARY: dict[str, GridWorldTaskSpec] = {
         goal=(4, 0),
         obstacles=SYMMETRIC_GOAL_OBSTACLES,
     ),
+    "gw_goal_bal_c": GridWorldTaskSpec(
+        task_id="gw_goal_bal_c",
+        goal=(0, 2),
+        obstacles=SYMMETRIC_GOAL_OBSTACLES,
+    ),
     "gw_dyn_a": GridWorldTaskSpec(task_id="gw_dyn_a", goal=(0, 0)),
     "gw_dyn_b": GridWorldTaskSpec(
         task_id="gw_dyn_b",
@@ -93,8 +97,14 @@ TASK_LIBRARY: dict[str, GridWorldTaskSpec] = {
 BENCHMARK_LIBRARY: dict[str, list[str]] = {
     "gw_goal_switch_aba_v1": ["gw_goal_a", "gw_goal_b", "gw_goal_a"],
     "gw_hidden_goal_aba_v1": ["gw_goal_a", "gw_goal_b", "gw_goal_a"],
+    "gw_hidden_goal_balanced_ab_v1": ["gw_goal_bal_a", "gw_goal_bal_b"],
+    "gw_hidden_goal_balanced_ac_v1": ["gw_goal_bal_a", "gw_goal_bal_c"],
     "gw_hidden_goal_balanced_aba_v1": ["gw_goal_bal_a", "gw_goal_bal_b", "gw_goal_bal_a"],
     "gw_goal_conditioned_aba_v1": ["gw_goal_a", "gw_goal_b", "gw_goal_a"],
+    "gw_goal_conditioned_balanced_ab_v1": ["gw_goal_bal_a", "gw_goal_bal_b"],
+    "gw_goal_conditioned_balanced_ac_v1": ["gw_goal_bal_a", "gw_goal_bal_c"],
+    "gw_goal_conditioned_balanced_ca_v1": ["gw_goal_bal_c", "gw_goal_bal_a"],
+    "gw_goal_conditioned_balanced_acb_v1": ["gw_goal_bal_a", "gw_goal_bal_c", "gw_goal_bal_b"],
     "gw_goal_conditioned_balanced_aba_v1": ["gw_goal_bal_a", "gw_goal_bal_b", "gw_goal_bal_a"],
     "gw_goal_switch_abca_v1": ["gw_goal_a", "gw_goal_b", "gw_goal_c", "gw_goal_a"],
     "gw_dynamics_switch_aba_v1": ["gw_dyn_a", "gw_dyn_b", "gw_dyn_a"],
@@ -104,8 +114,14 @@ BENCHMARK_LIBRARY: dict[str, list[str]] = {
 BENCHMARK_DEFAULT_OBS_MODE: dict[str, str] = {
     "gw_goal_switch_aba_v1": "agent_target",
     "gw_hidden_goal_aba_v1": "agent_only",
+    "gw_hidden_goal_balanced_ab_v1": "agent_only",
+    "gw_hidden_goal_balanced_ac_v1": "agent_only",
     "gw_hidden_goal_balanced_aba_v1": "agent_only",
     "gw_goal_conditioned_aba_v1": "agent_target",
+    "gw_goal_conditioned_balanced_ab_v1": "agent_target",
+    "gw_goal_conditioned_balanced_ac_v1": "agent_target",
+    "gw_goal_conditioned_balanced_ca_v1": "agent_target",
+    "gw_goal_conditioned_balanced_acb_v1": "agent_target",
     "gw_goal_conditioned_balanced_aba_v1": "agent_target",
     "gw_goal_switch_abca_v1": "agent_target",
     "gw_dynamics_switch_aba_v1": "grid_channels",
@@ -142,7 +158,9 @@ def make_gridworld_env(
     task: GridWorldTaskSpec,
     seed: int | None = None,
     max_episode_steps: int | None = None,
-) -> gym.Env:
+) -> Any:
+    import gymnasium as gym
+
     env = gym.make(
         "entropia/GridWorld-v0",
         max_episode_steps=(task.max_episode_steps if max_episode_steps is None else int(max_episode_steps)),

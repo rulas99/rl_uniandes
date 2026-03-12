@@ -66,7 +66,7 @@ def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(description="DDQN/MORPHIN continual adaptation runner")
     parser.add_argument("--mode", choices=["continual", "scratch_task"], default="continual")
     parser.add_argument("--method", choices=METHOD_CHOICES, default="ddqn_vanilla")
-    parser.add_argument("--benchmark", choices=sorted(BENCHMARK_LIBRARY), default="gw_goal_conditioned_balanced_aba_v1")
+    parser.add_argument("--benchmark", choices=sorted(BENCHMARK_LIBRARY), default="gw_goal_conditioned_balanced_ac_v1")
     parser.add_argument("--task-id", choices=sorted(TASK_LIBRARY), default=None)
     parser.add_argument("--task-ids-csv", type=str, default="")
     parser.add_argument("--episodes-per-task", type=int, default=400)
@@ -116,6 +116,7 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--eval-episodes", type=int, default=10)
     parser.add_argument("--eval-bank-base-seed", type=int, default=10000)
     parser.add_argument("--success-threshold", type=float, default=0.8)
+    parser.add_argument("--threshold-min-consecutive-evals", type=int, default=2)
     parser.add_argument("--recovery-window", type=int, default=25)
     parser.add_argument("--detector-max-delay-episodes", type=int, default=25)
     parser.add_argument("--scratch-summary-json", type=str, default="")
@@ -214,7 +215,7 @@ def build_task_sequence_for_run(args: argparse.Namespace) -> list[GridWorldTaskS
     )
 
 
-def load_scratch_refs(path: str) -> dict[str, dict[str, float]] | None:
+def load_scratch_refs(path: str) -> dict[str, dict[str, object]] | None:
     if not path:
         return None
     return json.loads(Path(path).read_text())
@@ -380,6 +381,16 @@ def summarize_run(
     total_steps: int,
     adaptation_controller: AdaptationController,
 ) -> dict[str, object]:
+    def mean_for_switch_rows(rows: list[dict[str, object]], key: str, switch_type: str | None = None) -> float:
+        selected = [
+            float(row[key])
+            for row in rows
+            if (switch_type is None or str(row.get("switch_type")) == switch_type)
+            and row.get(key) is not None
+            and not math.isnan(float(row[key]))
+        ]
+        return float(np.nanmean(selected)) if selected else math.nan
+
     overall_time_to_threshold_train = compute_overall_time_to_threshold(
         episode_rows=episode_rows,
         threshold=args.success_threshold,
@@ -388,6 +399,7 @@ def summarize_run(
     overall_time_to_threshold_eval = compute_eval_time_to_threshold(
         eval_rows=eval_rows,
         threshold=args.success_threshold,
+        min_consecutive=args.threshold_min_consecutive_evals,
     )
     final_eval_rows = [row for row in eval_rows if str(row["eval_scope"]) == "seen_tasks_end"]
     final_eval_mean = math.nan
@@ -416,8 +428,14 @@ def summarize_run(
         "overall_time_to_threshold_train_episodes": overall_time_to_threshold_train,
         "overall_time_to_threshold_eval_episodes": overall_time_to_threshold_eval["time_to_threshold_eval_episodes"],
         "overall_time_to_threshold_eval_steps": overall_time_to_threshold_eval["time_to_threshold_eval_steps"],
+        "initial_task_time_to_threshold_eval_episodes": overall_time_to_threshold_eval["time_to_threshold_eval_episodes"],
+        "initial_task_time_to_threshold_eval_steps": overall_time_to_threshold_eval["time_to_threshold_eval_steps"],
+        "threshold_min_consecutive_evals": int(args.threshold_min_consecutive_evals),
         "final_seen_success_mean": final_eval_mean,
         "current_task_final_success": current_task_final_success,
+        "num_switches": int(len(switch_rows_eval)),
+        "num_new_task_switches": int(sum(1 for row in switch_rows_eval if str(row.get("switch_type")) == "new_task")),
+        "num_revisit_task_switches": int(sum(1 for row in switch_rows_eval if str(row.get("switch_type")) == "revisit_task")),
         "num_oracle_switches": int(sum(1 for row in episode_rows if row["switch_event"] == "oracle")),
         "num_detected_drifts": int(adaptation_controller.num_detections),
         "num_false_alarms": int(false_alarm_count),
@@ -426,51 +444,68 @@ def summarize_run(
             if any(row["delay_episodes"] is not None for row in detection_rows)
             else math.nan
         ),
-        "switch_recovery_auc_success_eval_mean": (
-            float(np.nanmean([float(row["recovery_auc_success_eval"]) for row in switch_rows_eval]))
-            if switch_rows_eval
-            else math.nan
+        "switch_recovery_auc_success_eval_mean": mean_for_switch_rows(
+            switch_rows_eval, "recovery_auc_success_eval"
         ),
-        "switch_time_to_threshold_eval_episodes_mean": (
-            float(
-                np.nanmean(
-                    [
-                        float(row["time_to_threshold_eval_episodes"])
-                        for row in switch_rows_eval
-                        if row["time_to_threshold_eval_episodes"] is not None
-                    ]
-                )
-            )
-            if any(row["time_to_threshold_eval_episodes"] is not None for row in switch_rows_eval)
-            else math.nan
+        "switch_time_to_threshold_eval_episodes_mean": mean_for_switch_rows(
+            switch_rows_eval, "time_to_threshold_eval_episodes"
         ),
-        "switch_time_to_threshold_eval_steps_mean": (
-            float(
-                np.nanmean(
-                    [
-                        float(row["time_to_threshold_eval_steps"])
-                        for row in switch_rows_eval
-                        if row["time_to_threshold_eval_steps"] is not None
-                    ]
-                )
-            )
-            if any(row["time_to_threshold_eval_steps"] is not None for row in switch_rows_eval)
-            else math.nan
+        "switch_time_to_threshold_eval_steps_mean": mean_for_switch_rows(
+            switch_rows_eval, "time_to_threshold_eval_steps"
         ),
-        "adaptation_gain_vs_scratch_steps_mean": (
-            float(np.nanmean([float(row["adaptation_gain_vs_scratch_steps"]) for row in switch_rows_eval]))
-            if any(not math.isnan(float(row["adaptation_gain_vs_scratch_steps"])) for row in switch_rows_eval)
-            else math.nan
+        "adaptation_gain_vs_scratch_steps_mean": mean_for_switch_rows(
+            switch_rows_eval, "adaptation_gain_vs_scratch_steps"
         ),
-        "adaptation_gain_vs_scratch_episodes_mean": (
-            float(np.nanmean([float(row["adaptation_gain_vs_scratch_episodes"]) for row in switch_rows_eval]))
-            if any(not math.isnan(float(row["adaptation_gain_vs_scratch_episodes"])) for row in switch_rows_eval)
-            else math.nan
+        "switch_time_to_threshold_eval_steps_delta_vs_scratch_mean": mean_for_switch_rows(
+            switch_rows_eval, "time_to_threshold_eval_steps_delta_vs_scratch"
         ),
-        "initial_gap_vs_scratch_mean": (
-            float(np.nanmean([float(row["initial_gap_vs_scratch"]) for row in switch_rows_eval]))
-            if any(not math.isnan(float(row["initial_gap_vs_scratch"])) for row in switch_rows_eval)
-            else math.nan
+        "switch_log_adaptation_gain_vs_scratch_steps_mean": mean_for_switch_rows(
+            switch_rows_eval, "log_adaptation_gain_vs_scratch_steps"
+        ),
+        "adaptation_gain_vs_scratch_episodes_mean": mean_for_switch_rows(
+            switch_rows_eval, "adaptation_gain_vs_scratch_episodes"
+        ),
+        "initial_gap_vs_scratch_mean": mean_for_switch_rows(
+            switch_rows_eval, "initial_gap_vs_scratch"
+        ),
+        "new_task_recovery_auc_success_eval_mean": mean_for_switch_rows(
+            switch_rows_eval, "recovery_auc_success_eval", switch_type="new_task"
+        ),
+        "new_task_time_to_threshold_eval_episodes_mean": mean_for_switch_rows(
+            switch_rows_eval, "time_to_threshold_eval_episodes", switch_type="new_task"
+        ),
+        "new_task_time_to_threshold_eval_steps_mean": mean_for_switch_rows(
+            switch_rows_eval, "time_to_threshold_eval_steps", switch_type="new_task"
+        ),
+        "new_task_adaptation_gain_vs_scratch_steps_mean": mean_for_switch_rows(
+            switch_rows_eval, "adaptation_gain_vs_scratch_steps", switch_type="new_task"
+        ),
+        "new_task_time_to_threshold_eval_steps_delta_vs_scratch_mean": mean_for_switch_rows(
+            switch_rows_eval, "time_to_threshold_eval_steps_delta_vs_scratch", switch_type="new_task"
+        ),
+        "new_task_log_adaptation_gain_vs_scratch_steps_mean": mean_for_switch_rows(
+            switch_rows_eval, "log_adaptation_gain_vs_scratch_steps", switch_type="new_task"
+        ),
+        "new_task_initial_gap_vs_scratch_mean": mean_for_switch_rows(
+            switch_rows_eval, "initial_gap_vs_scratch", switch_type="new_task"
+        ),
+        "revisit_task_recovery_auc_success_eval_mean": mean_for_switch_rows(
+            switch_rows_eval, "recovery_auc_success_eval", switch_type="revisit_task"
+        ),
+        "revisit_task_time_to_threshold_eval_episodes_mean": mean_for_switch_rows(
+            switch_rows_eval, "time_to_threshold_eval_episodes", switch_type="revisit_task"
+        ),
+        "revisit_task_time_to_threshold_eval_steps_mean": mean_for_switch_rows(
+            switch_rows_eval, "time_to_threshold_eval_steps", switch_type="revisit_task"
+        ),
+        "revisit_task_adaptation_gain_vs_scratch_steps_mean": mean_for_switch_rows(
+            switch_rows_eval, "adaptation_gain_vs_scratch_steps", switch_type="revisit_task"
+        ),
+        "revisit_task_time_to_threshold_eval_steps_delta_vs_scratch_mean": mean_for_switch_rows(
+            switch_rows_eval, "time_to_threshold_eval_steps_delta_vs_scratch", switch_type="revisit_task"
+        ),
+        "revisit_task_log_adaptation_gain_vs_scratch_steps_mean": mean_for_switch_rows(
+            switch_rows_eval, "log_adaptation_gain_vs_scratch_steps", switch_type="revisit_task"
         ),
         "train_switch_recovery_auc_success_mean": (
             float(np.nanmean([float(row["recovery_auc_success"]) for row in switch_rows_train]))
@@ -805,6 +840,7 @@ def main() -> int:
         eval_rows=eval_rows,
         switch_episodes=switch_episodes,
         threshold=args.success_threshold,
+        min_consecutive=args.threshold_min_consecutive_evals,
         scratch_refs=scratch_refs,
         episode_rows=episode_rows,
     )
