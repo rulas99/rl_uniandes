@@ -38,8 +38,13 @@ METHOD_CHOICES = (
     "detector_reset_only",
     "oracle_segmented",
     "oracle_segmented_td",
+    "oracle_segmented_td_plus",
+    "oracle_segmented_revisit_aware",
+    "oracle_segmented_td_revisit_aware",
     "morphin_full",
     "morphin_segmented",
+    "morphin_detect",
+    "morphin_detect_seg",
 )
 
 
@@ -109,6 +114,9 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--segmented-keep-tail", type=int, default=512)
     parser.add_argument("--segmented-recent-only-steps", type=int, default=1000)
     parser.add_argument("--segmented-min-recent-samples", type=int, default=256)
+    parser.add_argument("--segmented-revisit-recent-mix-start", type=float, default=0.5)
+    parser.add_argument("--segmented-revisit-recent-mix-end", type=float, default=0.5)
+    parser.add_argument("--segmented-revisit-recent-only-steps", type=int, default=0)
 
     parser.add_argument("--eval-every-episodes", type=int, default=25)
     parser.add_argument("--eval-dense-every-episodes", type=int, default=5)
@@ -137,6 +145,21 @@ def parse_hidden_sizes(text: str) -> tuple[int, ...]:
 
 
 def default_adaptation_config(args: argparse.Namespace) -> AdaptationConfig:
+    revisit_recent_mix_start: float | None = None
+    revisit_recent_mix_end: float | None = None
+    revisit_recent_only_steps: int | None = None
+    eps_reset_value = args.eps_reset_value
+    eps_decay_steps_after_switch = args.eps_decay_steps_after_switch
+    archive_frac = args.archive_frac
+    recent_mix_start = args.recent_mix_start
+    recent_mix_end = args.recent_mix_end
+    post_switch_steps = args.post_switch_steps
+    segmented_keep_tail = args.segmented_keep_tail
+    segmented_recent_only_steps = args.segmented_recent_only_steps
+    segmented_min_recent_samples = args.segmented_min_recent_samples
+    base_updates_per_train_step = 1
+    post_switch_update_repeats = 1
+    post_switch_extra_update_steps = 0
     if args.method == "ddqn_scratch":
         replay_policy = "keep_all"
         epsilon_reset_on_switch = False
@@ -165,6 +188,35 @@ def default_adaptation_config(args: argparse.Namespace) -> AdaptationConfig:
         replay_policy = "segmented"
         epsilon_reset_on_switch = True
         td_adaptive = True
+    elif args.method == "oracle_segmented_td_plus":
+        replay_policy = "segmented"
+        epsilon_reset_on_switch = True
+        td_adaptive = True
+        eps_reset_value = 0.6
+        eps_decay_steps_after_switch = max(int(args.eps_decay_steps_after_switch), 6000)
+        archive_frac = 0.5
+        recent_mix_start = 0.7
+        recent_mix_end = 0.4
+        post_switch_steps = max(int(args.post_switch_steps), 10_000)
+        segmented_keep_tail = 2000
+        segmented_recent_only_steps = 250
+        segmented_min_recent_samples = 512
+        post_switch_update_repeats = 4
+        post_switch_extra_update_steps = 1500
+    elif args.method == "oracle_segmented_revisit_aware":
+        replay_policy = "segmented"
+        epsilon_reset_on_switch = True
+        td_adaptive = False
+        revisit_recent_mix_start = args.segmented_revisit_recent_mix_start
+        revisit_recent_mix_end = args.segmented_revisit_recent_mix_end
+        revisit_recent_only_steps = args.segmented_revisit_recent_only_steps
+    elif args.method == "oracle_segmented_td_revisit_aware":
+        replay_policy = "segmented"
+        epsilon_reset_on_switch = True
+        td_adaptive = True
+        revisit_recent_mix_start = args.segmented_revisit_recent_mix_start
+        revisit_recent_mix_end = args.segmented_revisit_recent_mix_end
+        revisit_recent_only_steps = args.segmented_revisit_recent_only_steps
     elif args.method == "morphin_full":
         replay_policy = "keep_all"
         epsilon_reset_on_switch = True
@@ -173,6 +225,14 @@ def default_adaptation_config(args: argparse.Namespace) -> AdaptationConfig:
         replay_policy = "segmented"
         epsilon_reset_on_switch = True
         td_adaptive = True
+    elif args.method == "morphin_detect":
+        replay_policy = "keep_all"
+        epsilon_reset_on_switch = True
+        td_adaptive = False
+    elif args.method == "morphin_detect_seg":
+        replay_policy = "segmented"
+        epsilon_reset_on_switch = True
+        td_adaptive = False
     else:
         raise ValueError(f"Unsupported method: {args.method}")
 
@@ -181,8 +241,8 @@ def default_adaptation_config(args: argparse.Namespace) -> AdaptationConfig:
         eps_start=args.eps_start,
         eps_end=args.eps_end,
         eps_decay_steps=args.eps_decay_steps,
-        eps_reset_value=args.eps_reset_value,
-        eps_decay_steps_after_switch=args.eps_decay_steps_after_switch,
+        eps_reset_value=eps_reset_value,
+        eps_decay_steps_after_switch=eps_decay_steps_after_switch,
         epsilon_reset_on_switch=epsilon_reset_on_switch,
         td_adaptive_loss=td_adaptive,
         alpha_max_mult=args.alpha_max_mult,
@@ -194,13 +254,19 @@ def default_adaptation_config(args: argparse.Namespace) -> AdaptationConfig:
         ph_min_instances=args.ph_min_instances,
         replay_policy=replay_policy,
         keep_recent_frac=args.keep_recent_frac,
-        archive_frac=args.archive_frac,
-        recent_mix_start=args.recent_mix_start,
-        recent_mix_end=args.recent_mix_end,
-        post_switch_steps=args.post_switch_steps,
-        segmented_keep_tail=args.segmented_keep_tail,
-        segmented_recent_only_steps=args.segmented_recent_only_steps,
-        segmented_min_recent_samples=args.segmented_min_recent_samples,
+        archive_frac=archive_frac,
+        recent_mix_start=recent_mix_start,
+        recent_mix_end=recent_mix_end,
+        post_switch_steps=post_switch_steps,
+        segmented_keep_tail=segmented_keep_tail,
+        segmented_recent_only_steps=segmented_recent_only_steps,
+        segmented_min_recent_samples=segmented_min_recent_samples,
+        segmented_revisit_recent_mix_start=revisit_recent_mix_start,
+        segmented_revisit_recent_mix_end=revisit_recent_mix_end,
+        segmented_revisit_recent_only_steps=revisit_recent_only_steps,
+        base_updates_per_train_step=base_updates_per_train_step,
+        post_switch_update_repeats=post_switch_update_repeats,
+        post_switch_extra_update_steps=post_switch_extra_update_steps,
     )
 
 
@@ -348,13 +414,31 @@ def evaluate_task(
     }
 
 
-def make_replay_buffer(args: argparse.Namespace, adaptation: AdaptationConfig) -> Any:
+def resolve_replay_buffer_config(args: argparse.Namespace) -> dict[str, int]:
+    if args.method == "oracle_segmented_td_plus":
+        return {
+            "uniform_capacity": max(int(args.buffer_capacity), 20_000),
+            "recent_capacity": max(int(args.recent_buffer_capacity), 20_000),
+            "archive_capacity": max(int(args.archive_buffer_capacity), 20_000),
+        }
+    return {
+        "uniform_capacity": int(args.buffer_capacity),
+        "recent_capacity": int(args.recent_buffer_capacity),
+        "archive_capacity": int(args.archive_buffer_capacity),
+    }
+
+
+def make_replay_buffer(
+    args: argparse.Namespace,
+    adaptation: AdaptationConfig,
+    replay_buffer_config: dict[str, int],
+) -> Any:
     if adaptation.replay_policy == "segmented":
         return SegmentedReplayBuffer(
-            recent_capacity=args.recent_buffer_capacity,
-            archive_capacity=args.archive_buffer_capacity,
+            recent_capacity=replay_buffer_config["recent_capacity"],
+            archive_capacity=replay_buffer_config["archive_capacity"],
         )
-    return UniformReplayBuffer(capacity=args.buffer_capacity)
+    return UniformReplayBuffer(capacity=replay_buffer_config["uniform_capacity"])
 
 
 def write_csv(path: Path, rows: list[dict[str, object]]) -> None:
@@ -532,13 +616,6 @@ def main() -> int:
     run_dir = Path(args.log_dir) / run_name
     run_dir.mkdir(parents=True, exist_ok=True)
 
-    config_dump = vars(args).copy()
-    config_dump["device_resolved"] = str(device)
-    config_dump["obs_mode_resolved"] = obs_mode
-    config_dump["hidden_sizes"] = list(hidden_sizes)
-    config_dump["task_sequence"] = [task.to_dict() for task in task_sequence]
-    (run_dir / "config.json").write_text(json.dumps(config_dump, indent=2))
-
     bootstrap_env = make_gridworld_env(
         task_sequence[0],
         seed=args.seed,
@@ -560,8 +637,17 @@ def main() -> int:
     )
     agent = DDQNAgent(obs_dim=obs_dim, action_dim=action_dim, config=ddqn_config, device=device)
     adaptation = default_adaptation_config(args)
+    replay_buffer_config = resolve_replay_buffer_config(args)
+    config_dump = vars(args).copy()
+    config_dump["device_resolved"] = str(device)
+    config_dump["obs_mode_resolved"] = obs_mode
+    config_dump["hidden_sizes"] = list(hidden_sizes)
+    config_dump["task_sequence"] = [task.to_dict() for task in task_sequence]
+    config_dump["effective_adaptation"] = adaptation.__dict__.copy()
+    config_dump["effective_replay_buffer"] = replay_buffer_config.copy()
+    (run_dir / "config.json").write_text(json.dumps(config_dump, indent=2))
     controller = AdaptationController(adaptation)
-    replay_buffer = make_replay_buffer(args, adaptation)
+    replay_buffer = make_replay_buffer(args, adaptation, replay_buffer_config)
     scratch_refs = load_scratch_refs(args.scratch_summary_json)
     eval_seed_bank = build_eval_seed_bank(
         task_sequence=task_sequence,
@@ -580,6 +666,7 @@ def main() -> int:
     total_steps = 0
     env = None
     current_env_task_id = None
+    seen_task_ids = {str(task_sequence[0].task_id)}
 
     for episode_idx in range(total_episodes):
         task_idx = min(episode_idx // args.episodes_per_task, len(task_sequence) - 1)
@@ -590,15 +677,18 @@ def main() -> int:
             prev_task = task_sequence[prev_task_idx]
         actual_switch = prev_task is not None and prev_task.task_id != task.task_id
         switch_event = "none"
+        switch_type = "none"
         if actual_switch:
             switch_episodes.append(episode_idx)
+            switch_type = "revisit_task" if str(task.task_id) in seen_task_ids else "new_task"
             if controller.uses_oracle_boundaries:
-                controller.on_task_switch(replay_buffer)
+                controller.on_task_switch(replay_buffer, switch_type=switch_type)
                 switch_event = "oracle"
                 detector_rows.append(
                     {
                         "episode": episode_idx + 1,
                         "task_id": task.task_id,
+                        "switch_type": switch_type,
                         "event_type": "oracle_switch",
                         "ph_signal_raw": controller.last_signal_raw,
                         "ph_signal_ema": controller.last_signal_ema,
@@ -606,6 +696,7 @@ def main() -> int:
                         "epsilon_after_event": controller.current_epsilon(),
                     }
                 )
+            seen_task_ids.add(str(task.task_id))
 
         if env is None or current_env_task_id != task.task_id:
             if env is not None:
@@ -655,46 +746,49 @@ def main() -> int:
                 and controller.can_update(replay_buffer, batch_size=args.batch_size)
                 and total_steps % args.train_freq == 0
             ):
-                sample_kwargs: dict[str, object] = {}
-                if adaptation.replay_policy == "segmented":
-                    sample_kwargs["p_recent"] = controller.segmented_recent_fraction()
-                batch = replay_buffer.sample(
-                    batch_size=args.batch_size,
-                    device=device,
-                    **sample_kwargs,
-                )
-                stats = agent.update(batch=batch, weight_fn=controller.td_loss_weights)
-                train_updates += 1
-                td_abs_mean_values.append(stats["td_abs_mean"])
-                td_abs_max_values.append(stats["td_abs_max"])
-                loss_values.append(stats["loss"])
-                update_rows.append(
-                    {
-                        "global_step": total_steps,
-                        "episode": episode_idx + 1,
-                        "task_id": task.task_id,
-                        "loss": stats["loss"],
-                        "td_abs_mean": stats["td_abs_mean"],
-                        "td_abs_max": stats["td_abs_max"],
-                        "q_sa_mean": stats["q_sa_mean"],
-                        "target_q_mean": stats["target_q_mean"],
-                        "epsilon": controller.current_epsilon(),
-                        "p_recent": (
-                            controller.segmented_recent_fraction()
-                            if adaptation.replay_policy == "segmented"
-                            else math.nan
-                        ),
-                        "recent_size": (
-                            replay_buffer.num_recent() if hasattr(replay_buffer, "num_recent") else math.nan
-                        ),
-                        "archive_size": (
-                            replay_buffer.num_archive() if hasattr(replay_buffer, "num_archive") else math.nan
-                        ),
-                        "ph_signal_raw": controller.last_signal_raw,
-                        "ph_signal_ema": controller.last_signal_ema,
-                        "ph_stat": controller.last_ph_stat,
-                    }
-                )
+                for _ in range(controller.update_repeats()):
+                    if not controller.can_update(replay_buffer, batch_size=args.batch_size):
+                        break
+                    sample_kwargs: dict[str, object] = {}
+                    if adaptation.replay_policy == "segmented":
+                        sample_kwargs["p_recent"] = controller.segmented_recent_fraction()
+                    batch = replay_buffer.sample(
+                        batch_size=args.batch_size,
+                        device=device,
+                        **sample_kwargs,
+                    )
+                    stats = agent.update(batch=batch, weight_fn=controller.td_loss_weights)
+                    train_updates += 1
+                    td_abs_mean_values.append(stats["td_abs_mean"])
+                    td_abs_max_values.append(stats["td_abs_max"])
+                    loss_values.append(stats["loss"])
+                    update_rows.append(
+                        {
+                            "global_step": total_steps,
+                            "episode": episode_idx + 1,
+                            "task_id": task.task_id,
+                            "loss": stats["loss"],
+                            "td_abs_mean": stats["td_abs_mean"],
+                            "td_abs_max": stats["td_abs_max"],
+                            "q_sa_mean": stats["q_sa_mean"],
+                            "target_q_mean": stats["target_q_mean"],
+                            "epsilon": controller.current_epsilon(),
+                            "p_recent": (
+                                controller.segmented_recent_fraction()
+                                if adaptation.replay_policy == "segmented"
+                                else math.nan
+                            ),
+                            "recent_size": (
+                                replay_buffer.num_recent() if hasattr(replay_buffer, "num_recent") else math.nan
+                            ),
+                            "archive_size": (
+                                replay_buffer.num_archive() if hasattr(replay_buffer, "num_archive") else math.nan
+                            ),
+                            "ph_signal_raw": controller.last_signal_raw,
+                            "ph_signal_ema": controller.last_signal_ema,
+                            "ph_stat": controller.last_ph_stat,
+                        }
+                    )
 
             if done:
                 success = float(bool(info.get("is_success", False)))
@@ -747,6 +841,7 @@ def main() -> int:
                 "ph_stat": controller.last_ph_stat,
                 "hit_obstacle_count": hit_obstacle_count,
                 "switch_event": switch_event,
+                "switch_type": switch_type,
                 "actual_boundary": int(actual_switch),
                 "drift_detected": int(drift_detected),
             }

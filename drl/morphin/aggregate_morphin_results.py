@@ -41,6 +41,31 @@ def mean_std(values: list[float]) -> tuple[float, float]:
     return mean, variance ** 0.5
 
 
+def safe_float(value: object) -> float | None:
+    if value in {"", None}:
+        return None
+    value_f = float(value)
+    if math.isnan(value_f):
+        return None
+    return value_f
+
+
+def ordered_task_ids(task_sequence: object) -> list[str]:
+    if not isinstance(task_sequence, list):
+        return []
+    ordered: list[str] = []
+    for item in task_sequence:
+        if isinstance(item, str):
+            task_id = item
+        elif isinstance(item, dict) and "task_id" in item:
+            task_id = str(item["task_id"])
+        else:
+            continue
+        if task_id not in ordered:
+            ordered.append(task_id)
+    return ordered
+
+
 def mean_valid(rows: list[dict[str, str]], key: str, switch_type: str | None = None) -> float:
     values: list[float] = []
     for row in rows:
@@ -141,6 +166,24 @@ def summarize_summaries(
         if item.get("revisit_task_log_adaptation_gain_vs_scratch_steps_mean") is not None
         and not math.isnan(float(item["revisit_task_log_adaptation_gain_vs_scratch_steps_mean"]))
     ]
+    final_unique_tasks_ge_threshold_values = [
+        float(item["final_unique_tasks_success_ge_threshold"])
+        for item in summaries
+        if item.get("final_unique_tasks_success_ge_threshold") is not None
+        and not math.isnan(float(item["final_unique_tasks_success_ge_threshold"]))
+    ]
+    final_unique_task_fraction_values = [
+        float(item["final_unique_task_success_fraction_ge_threshold"])
+        for item in summaries
+        if item.get("final_unique_task_success_fraction_ge_threshold") is not None
+        and not math.isnan(float(item["final_unique_task_success_fraction_ge_threshold"]))
+    ]
+    final_all_unique_values = [
+        float(item["final_all_unique_tasks_success_ge_threshold"])
+        for item in summaries
+        if item.get("final_all_unique_tasks_success_ge_threshold") is not None
+        and not math.isnan(float(item["final_all_unique_tasks_success_ge_threshold"]))
+    ]
     final_mean, final_std = mean_std(final_values)
     current_mean, current_std = mean_std(current_values)
     threshold_mean, threshold_std = mean_std(threshold_values)
@@ -155,6 +198,13 @@ def summarize_summaries(
     revisit_recovery_mean, revisit_recovery_std = mean_std(revisit_recovery_values)
     revisit_ttt_delta_mean, revisit_ttt_delta_std = mean_std(revisit_ttt_delta_values)
     revisit_log_gain_mean, revisit_log_gain_std = mean_std(revisit_log_gain_values)
+    final_unique_tasks_ge_threshold_mean, final_unique_tasks_ge_threshold_std = mean_std(
+        final_unique_tasks_ge_threshold_values
+    )
+    final_unique_task_fraction_mean, final_unique_task_fraction_std = mean_std(
+        final_unique_task_fraction_values
+    )
+    final_all_unique_rate, final_all_unique_std = mean_std(final_all_unique_values)
     adapt_mean, adapt_std = mean_std(adapt_values)
     row: dict[str, object] = {
         "num_runs": len(summaries),
@@ -191,6 +241,13 @@ def summarize_summaries(
         "revisit_task_time_to_threshold_eval_steps_delta_vs_scratch_std": revisit_ttt_delta_std,
         "revisit_task_log_adaptation_gain_vs_scratch_steps_mean": revisit_log_gain_mean,
         "revisit_task_log_adaptation_gain_vs_scratch_steps_std": revisit_log_gain_std,
+        "final_unique_tasks_success_ge_threshold_mean": final_unique_tasks_ge_threshold_mean,
+        "final_unique_tasks_success_ge_threshold_std": final_unique_tasks_ge_threshold_std,
+        "final_unique_task_success_fraction_ge_threshold_mean": final_unique_task_fraction_mean,
+        "final_unique_task_success_fraction_ge_threshold_std": final_unique_task_fraction_std,
+        "final_all_unique_tasks_success_ge_threshold_rate": final_all_unique_rate,
+        "final_all_unique_tasks_success_ge_threshold_std": final_all_unique_std,
+        "final_all_unique_tasks_success_ge_threshold_count": int(sum(1 for value in final_all_unique_values if value >= 1.0)),
     }
     if method is not None:
         row["method"] = method
@@ -209,6 +266,7 @@ def main() -> int:
     runs_index: list[dict[str, object]] = []
     episode_long: list[dict[str, object]] = []
     eval_long: list[dict[str, object]] = []
+    final_task_long: list[dict[str, object]] = []
     update_long: list[dict[str, object]] = []
     switch_long: list[dict[str, object]] = []
     train_switch_long: list[dict[str, object]] = []
@@ -218,6 +276,7 @@ def main() -> int:
     benchmark_summary: list[dict[str, object]] = []
     benchmark_method_summary: list[dict[str, object]] = []
     benchmark_switch_type_summary: list[dict[str, object]] = []
+    final_task_summary: list[dict[str, object]] = []
 
     grouped: dict[str, list[dict[str, object]]] = defaultdict(list)
     grouped_by_benchmark: dict[str, list[dict[str, object]]] = defaultdict(list)
@@ -265,7 +324,51 @@ def main() -> int:
                 switch_rows_for_run, "log_adaptation_gain_vs_scratch_steps", switch_type="revisit_task"
             ),
         }
-        summary = {**summary, **{k: v for k, v in derived_summary_metrics.items() if k not in summary or summary.get(k) is None}}
+        summary = {
+            **summary,
+            **{k: v for k, v in derived_summary_metrics.items() if k not in summary or summary.get(k) is None},
+        }
+        task_sequence = summary.get("task_sequence") or config.get("task_sequence") or []
+        unique_task_ids = ordered_task_ids(task_sequence)
+        success_threshold = safe_float(config.get("success_threshold")) or 0.8
+        final_unique_tasks_success_ge_threshold = 0
+        final_unique_task_success_fraction_ge_threshold = math.nan
+        final_all_unique_tasks_success_ge_threshold = 0
+        final_eval_success_by_task: dict[str, float] = {}
+        eval_rows_for_run = read_csv(run_dir / "eval_metrics.csv")
+        final_eval_rows_for_run = [
+            row for row in eval_rows_for_run if str(row.get("eval_scope")) == "seen_tasks_end"
+        ]
+        if final_eval_rows_for_run:
+            last_episode = max(int(row["episode"]) for row in final_eval_rows_for_run)
+            final_eval_rows_for_run = [
+                row for row in final_eval_rows_for_run if int(row["episode"]) == last_episode
+            ]
+            for row in final_eval_rows_for_run:
+                success_rate = safe_float(row.get("success_rate"))
+                if success_rate is not None:
+                    final_eval_success_by_task[str(row["task_id"])] = success_rate
+            final_unique_tasks_success_ge_threshold = sum(
+                1
+                for task_id in unique_task_ids
+                if final_eval_success_by_task.get(task_id, -math.inf) >= success_threshold
+            )
+            if unique_task_ids:
+                final_unique_task_success_fraction_ge_threshold = (
+                    final_unique_tasks_success_ge_threshold / len(unique_task_ids)
+                )
+                final_all_unique_tasks_success_ge_threshold = int(
+                    final_unique_tasks_success_ge_threshold == len(unique_task_ids)
+                )
+        summary.update(
+            {
+                "num_unique_tasks": len(unique_task_ids),
+                "success_threshold": success_threshold,
+                "final_unique_tasks_success_ge_threshold": final_unique_tasks_success_ge_threshold,
+                "final_unique_task_success_fraction_ge_threshold": final_unique_task_success_fraction_ge_threshold,
+                "final_all_unique_tasks_success_ge_threshold": final_all_unique_tasks_success_ge_threshold,
+            }
+        )
         run_row = {
             "run_dir": str(run_dir),
             "method": summary["method"],
@@ -296,6 +399,11 @@ def main() -> int:
             "revisit_task_recovery_auc_success_eval_mean": summary.get("revisit_task_recovery_auc_success_eval_mean"),
             "revisit_task_time_to_threshold_eval_steps_delta_vs_scratch_mean": summary.get("revisit_task_time_to_threshold_eval_steps_delta_vs_scratch_mean"),
             "revisit_task_log_adaptation_gain_vs_scratch_steps_mean": summary.get("revisit_task_log_adaptation_gain_vs_scratch_steps_mean"),
+            "num_unique_tasks": summary.get("num_unique_tasks"),
+            "success_threshold": summary.get("success_threshold"),
+            "final_unique_tasks_success_ge_threshold": summary.get("final_unique_tasks_success_ge_threshold"),
+            "final_unique_task_success_fraction_ge_threshold": summary.get("final_unique_task_success_fraction_ge_threshold"),
+            "final_all_unique_tasks_success_ge_threshold": summary.get("final_all_unique_tasks_success_ge_threshold"),
             "threshold_min_consecutive_evals": summary.get("threshold_min_consecutive_evals"),
         }
         runs_index.append(run_row)
@@ -305,8 +413,26 @@ def main() -> int:
 
         for row in read_csv(run_dir / "episode_metrics.csv"):
             episode_long.append({"run_dir": str(run_dir), **summary, **row})
-        for row in read_csv(run_dir / "eval_metrics.csv"):
+        for row in eval_rows_for_run:
             eval_long.append({"run_dir": str(run_dir), **summary, **row})
+        if final_eval_rows_for_run:
+            current_task_id = ""
+            if task_sequence:
+                last_task = task_sequence[-1]
+                current_task_id = str(last_task if isinstance(last_task, str) else last_task["task_id"])
+            for row in final_eval_rows_for_run:
+                final_task_long.append(
+                    {
+                        "run_dir": str(run_dir),
+                        **summary,
+                        **row,
+                        "task_role": (
+                            "current_task"
+                            if str(row["task_id"]) == current_task_id
+                            else "previous_task"
+                        ),
+                    }
+                )
         for row in read_csv(run_dir / "update_metrics.csv"):
             update_long.append({"run_dir": str(run_dir), **summary, **row})
         for row in switch_rows_for_run:
@@ -342,6 +468,7 @@ def main() -> int:
     write_csv(output_dir / "runs_index.csv", runs_index)
     write_csv(output_dir / "episode_metrics_long.csv", episode_long)
     write_csv(output_dir / "eval_metrics_long.csv", eval_long)
+    write_csv(output_dir / "final_task_metrics_long.csv", final_task_long)
     write_csv(output_dir / "update_metrics_long.csv", update_long)
     write_csv(output_dir / "switch_metrics_long.csv", switch_long)
     write_csv(output_dir / "switch_metrics_train_long.csv", train_switch_long)
@@ -350,6 +477,36 @@ def main() -> int:
     write_csv(output_dir / "group_summary.csv", group_rows)
     write_csv(output_dir / "benchmark_summary.csv", benchmark_summary)
     write_csv(output_dir / "benchmark_method_summary.csv", benchmark_method_summary)
+
+    final_task_grouped: dict[tuple[str, str, str, str], list[dict[str, object]]] = defaultdict(list)
+    for row in final_task_long:
+        final_task_grouped[
+            (
+                str(row["benchmark"]),
+                str(row["method"]),
+                str(row["task_id"]),
+                str(row["task_role"]),
+            )
+        ].append(row)
+    for (benchmark, method, task_id, task_role), rows in sorted(final_task_grouped.items()):
+        success_values = [float(row["success_rate"]) for row in rows]
+        zero_final_runs = sum(1 for value in success_values if value <= 0.0)
+        perfect_final_runs = sum(1 for value in success_values if value >= 1.0)
+        final_mean, final_std = mean_std(success_values)
+        final_task_summary.append(
+            {
+                "benchmark": benchmark,
+                "method": method,
+                "task_id": task_id,
+                "task_role": task_role,
+                "num_runs": len(rows),
+                "final_success_mean": final_mean,
+                "final_success_std": final_std,
+                "num_zero_final_runs": zero_final_runs,
+                "num_perfect_final_runs": perfect_final_runs,
+            }
+        )
+    write_csv(output_dir / "final_task_summary.csv", final_task_summary)
 
     switch_grouped: dict[tuple[str, str], list[dict[str, object]]] = defaultdict(list)
     benchmark_switch_grouped: dict[tuple[str, str, str], list[dict[str, object]]] = defaultdict(list)
@@ -477,6 +634,10 @@ def main() -> int:
             f"+/- {row['final_seen_success_std']:.4f}, "
             f"current_task_final_success={row['current_task_final_success_mean']:.4f} "
             f"+/- {row['current_task_final_success_std']:.4f}, "
+            f"all_unique_final_rate={row['final_all_unique_tasks_success_ge_threshold_rate']:.4f} "
+            f"({int(row['final_all_unique_tasks_success_ge_threshold_count'])}/{int(row['num_runs'])}), "
+            f"final_unique_tasks_ge_thr={row['final_unique_tasks_success_ge_threshold_mean']:.4f} "
+            f"+/- {row['final_unique_tasks_success_ge_threshold_std']:.4f}, "
             f"headline_recovery_auc_eval={row['headline_recovery_auc_eval']:.4f}, "
             f"new_task_auc={row['new_task_recovery_auc_success_eval_mean']:.4f} "
             f"+/- {row['new_task_recovery_auc_success_eval_std']:.4f}, "
@@ -499,6 +660,9 @@ def main() -> int:
             report_lines.append(
                 f"- `{row['benchmark']}` / `{row['method']}`: "
                 f"headline_recovery_auc_eval={row['headline_recovery_auc_eval']:.4f}, "
+                f"all_unique_final_rate={row['final_all_unique_tasks_success_ge_threshold_rate']:.4f} "
+                f"({int(row['final_all_unique_tasks_success_ge_threshold_count'])}/{int(row['num_runs'])}), "
+                f"final_unique_tasks_ge_thr={row['final_unique_tasks_success_ge_threshold_mean']:.4f}, "
                 f"new_task_auc={row['new_task_recovery_auc_success_eval_mean']:.4f} "
                 f"+/- {row['new_task_recovery_auc_success_eval_std']:.4f}, "
                 f"new_task_ttt_steps={row['new_task_time_to_threshold_eval_steps_mean']:.2f}, "
@@ -506,6 +670,44 @@ def main() -> int:
                 f"log_gain_vs_scratch={row['new_task_log_adaptation_gain_vs_scratch_steps_mean']:.4f}, "
                 f"current_task_final_success={row['current_task_final_success_mean']:.4f}, "
                 f"final_seen_success={row['final_seen_success_mean']:.4f}"
+            )
+    if group_rows:
+        report_lines.extend(
+            [
+                "",
+                "## Final Retention Summary",
+                "",
+            ]
+        )
+        for row in group_rows:
+            report_lines.append(
+                f"- `{row['method']}`: "
+                f"all_unique_final_rate={row['final_all_unique_tasks_success_ge_threshold_rate']:.4f} "
+                f"({int(row['final_all_unique_tasks_success_ge_threshold_count'])}/{int(row['num_runs'])}), "
+                f"mean_unique_tasks_ge_thr={row['final_unique_tasks_success_ge_threshold_mean']:.4f} "
+                f"+/- {row['final_unique_tasks_success_ge_threshold_std']:.4f}, "
+                f"mean_unique_task_fraction_ge_thr={row['final_unique_task_success_fraction_ge_threshold_mean']:.4f} "
+                f"+/- {row['final_unique_task_success_fraction_ge_threshold_std']:.4f}"
+            )
+    if final_task_summary:
+        report_lines.extend(
+            [
+                "",
+                "## Final Task Summary",
+                "",
+            ]
+        )
+        final_task_summary_grouped: dict[tuple[str, str], list[dict[str, object]]] = defaultdict(list)
+        for row in final_task_summary:
+            final_task_summary_grouped[(str(row["benchmark"]), str(row["method"]))].append(row)
+        for (benchmark, method), rows in sorted(final_task_summary_grouped.items()):
+            task_fragments = []
+            for row in sorted(rows, key=lambda item: (str(item["task_role"]) != "current_task", str(item["task_id"]))):
+                task_fragments.append(
+                    f"{row['task_id']}[{row['task_role']}]={float(row['final_success_mean']):.4f}"
+                )
+            report_lines.append(
+                f"- `{benchmark}` / `{method}`: " + ", ".join(task_fragments)
             )
     if switch_type_summary:
         report_lines.extend(
@@ -557,6 +759,7 @@ def main() -> int:
                     "runs_index_csv": str(output_dir / "runs_index.csv"),
                     "episode_metrics_long_csv": str(output_dir / "episode_metrics_long.csv"),
                     "eval_metrics_long_csv": str(output_dir / "eval_metrics_long.csv"),
+                    "final_task_metrics_long_csv": str(output_dir / "final_task_metrics_long.csv"),
                     "update_metrics_long_csv": str(output_dir / "update_metrics_long.csv"),
                     "switch_metrics_long_csv": str(output_dir / "switch_metrics_long.csv"),
                     "switch_metrics_train_long_csv": str(output_dir / "switch_metrics_train_long.csv"),
@@ -566,6 +769,7 @@ def main() -> int:
                     "benchmark_method_summary_csv": str(output_dir / "benchmark_method_summary.csv"),
                     "switch_type_summary_csv": str(output_dir / "switch_type_summary.csv"),
                     "benchmark_switch_type_summary_csv": str(output_dir / "benchmark_switch_type_summary.csv"),
+                    "final_task_summary_csv": str(output_dir / "final_task_summary.csv"),
                     "group_summary_csv": str(output_dir / "group_summary.csv"),
                     "report_md": str(output_dir / "report.md"),
                 },

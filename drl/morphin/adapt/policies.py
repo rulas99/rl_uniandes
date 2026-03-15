@@ -34,6 +34,12 @@ class AdaptationConfig:
     segmented_keep_tail: int = 512
     segmented_recent_only_steps: int = 1_000
     segmented_min_recent_samples: int = 256
+    segmented_revisit_recent_mix_start: float | None = None
+    segmented_revisit_recent_mix_end: float | None = None
+    segmented_revisit_recent_only_steps: int | None = None
+    base_updates_per_train_step: int = 1
+    post_switch_update_repeats: int = 1
+    post_switch_extra_update_steps: int = 0
 
 
 class EpsilonScheduler:
@@ -90,14 +96,29 @@ class AdaptationController:
         self.last_signal_raw = 0.0
         self.last_signal_ema = 0.0
         self.last_ph_stat = 0.0
+        self.current_switch_type = "initial"
 
     @property
     def uses_oracle_boundaries(self) -> bool:
-        return self.config.method in {"oracle_reset", "morphin_lite", "oracle_segmented", "oracle_segmented_td"}
+        return self.config.method in {
+            "oracle_reset",
+            "morphin_lite",
+            "oracle_segmented",
+            "oracle_segmented_td",
+            "oracle_segmented_td_plus",
+            "oracle_segmented_revisit_aware",
+            "oracle_segmented_td_revisit_aware",
+        }
 
     @property
     def uses_detector(self) -> bool:
-        return self.config.method in {"detector_reset_only", "morphin_full", "morphin_segmented"}
+        return self.config.method in {
+            "detector_reset_only",
+            "morphin_full",
+            "morphin_segmented",
+            "morphin_detect",
+            "morphin_detect_seg",
+        }
 
     def current_epsilon(self) -> float:
         return self.epsilon_scheduler.value()
@@ -106,15 +127,16 @@ class AdaptationController:
         self.epsilon_scheduler.step()
         self.steps_since_switch += 1
 
-    def on_task_switch(self, replay_buffer: Any) -> dict[str, Any]:
+    def on_task_switch(self, replay_buffer: Any, switch_type: str | None = None) -> dict[str, Any]:
         if self.config.epsilon_reset_on_switch:
             self.epsilon_scheduler.reset(
                 value=self.config.eps_reset_value,
                 decay_steps=self.config.eps_decay_steps_after_switch,
             )
         self.steps_since_switch = 0
+        self.current_switch_type = switch_type or "unknown"
         self._apply_replay_switch(replay_buffer)
-        return {"switch_trigger": "oracle"}
+        return {"switch_trigger": "oracle", "switch_type": self.current_switch_type}
 
     def on_episode_end(
         self,
@@ -151,6 +173,7 @@ class AdaptationController:
                 decay_steps=self.config.eps_decay_steps_after_switch,
             )
         self.steps_since_switch = 0
+        self.current_switch_type = "unknown"
         self.detector.reset()
         self.ema_signal = None
         self.last_signal_raw = signal
@@ -162,24 +185,61 @@ class AdaptationController:
     def td_loss_weights(self, td_abs: torch.Tensor) -> torch.Tensor:
         if not self.config.td_adaptive_loss:
             return torch.ones_like(td_abs)
-        return 1.0 + (self.config.alpha_max_mult - 1.0) * torch.sigmoid(td_abs - self.config.td_k)
+        # Only apply during the post-switch adaptation window
+        if self.steps_since_switch > self.config.post_switch_steps:
+            return torch.ones_like(td_abs)
+        # Decay the reweighting strength linearly over the post-switch window
+        decay = 1.0 - min(1.0, self.steps_since_switch / max(1, self.config.post_switch_steps))
+        # DOWNWEIGHT high-TD samples (they are likely stale/misleading after switch)
+        td_mean = td_abs.mean().detach()
+        td_norm = td_abs / (td_mean + 1e-6)
+        # High td_norm -> low weight (inverse sigmoid); low td_norm -> high weight
+        max_mult = 1.0 + (self.config.alpha_max_mult - 1.0) * decay
+        weights = 1.0 + (max_mult - 1.0) * (1.0 - torch.sigmoid(td_norm - self.config.td_k))
+        return weights.clamp(min=0.5, max=max_mult)
 
     def segmented_recent_fraction(self) -> float:
-        if self.steps_since_switch < self.config.segmented_recent_only_steps:
+        recent_only_steps, mix_start, mix_end = self._segmented_schedule()
+        if self.steps_since_switch < recent_only_steps:
             return 1.0
-        effective_steps = self.steps_since_switch - self.config.segmented_recent_only_steps
+        effective_steps = self.steps_since_switch - recent_only_steps
         frac = min(1.0, effective_steps / max(1, self.config.post_switch_steps))
-        return self.config.recent_mix_start + frac * (self.config.recent_mix_end - self.config.recent_mix_start)
+        return mix_start + frac * (mix_end - mix_start)
 
     def can_update(self, replay_buffer: Any, batch_size: int) -> bool:
         if len(replay_buffer) < int(batch_size):
             return False
         if self.config.replay_policy != "segmented":
             return True
-        if self.steps_since_switch < self.config.post_switch_steps:
+        recent_only_steps, _, _ = self._segmented_schedule()
+        if self.steps_since_switch < recent_only_steps:
             if hasattr(replay_buffer, "num_recent"):
                 return int(replay_buffer.num_recent()) >= int(self.config.segmented_min_recent_samples)
         return True
+
+    def update_repeats(self) -> int:
+        repeats = int(self.config.base_updates_per_train_step)
+        if self.steps_since_switch < int(self.config.post_switch_extra_update_steps):
+            repeats = max(repeats, int(self.config.post_switch_update_repeats))
+        return max(1, repeats)
+
+    def _segmented_schedule(self) -> tuple[int, float, float]:
+        if (
+            self.current_switch_type == "revisit_task"
+            and self.config.segmented_revisit_recent_mix_start is not None
+            and self.config.segmented_revisit_recent_mix_end is not None
+        ):
+            revisit_recent_only_steps = self.config.segmented_revisit_recent_only_steps
+            return (
+                int(revisit_recent_only_steps or 0),
+                float(self.config.segmented_revisit_recent_mix_start),
+                float(self.config.segmented_revisit_recent_mix_end),
+            )
+        return (
+            int(self.config.segmented_recent_only_steps),
+            float(self.config.recent_mix_start),
+            float(self.config.recent_mix_end),
+        )
 
     def _apply_replay_switch(self, replay_buffer: Any) -> None:
         if self.config.replay_policy == "keep_all":

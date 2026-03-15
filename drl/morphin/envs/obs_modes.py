@@ -2,10 +2,31 @@ from __future__ import annotations
 
 import numpy as np
 
+from .gridworld_switch import TASK_LIBRARY
 from .gridworld_switch import GridWorldTaskSpec
 
 
-OBS_MODE_CHOICES = ("agent_only", "agent_target", "grid_channels")
+OBS_MODE_CHOICES = (
+    "agent_only",
+    "agent_target",
+    "agent_context",
+    "agent_context_calibrated",
+    "agent_context_calibrated_v2",
+    "agent_context_calibrated_v3",
+    "grid_channels",
+)
+TASK_CONTEXT_TASK_IDS = tuple(sorted(TASK_LIBRARY))
+TASK_CONTEXT_INDEX = {task_id: index for index, task_id in enumerate(TASK_CONTEXT_TASK_IDS)}
+CALIBRATED_CONTEXT_TASK_IDS = ("gw9_goal_cal_a", "gw9_goal_cal_b", "gw9_goal_cal_c")
+CALIBRATED_CONTEXT_INDEX = {task_id: index for index, task_id in enumerate(CALIBRATED_CONTEXT_TASK_IDS)}
+CALIBRATED_V2_CONTEXT_TASK_IDS = ("gw9_goal_cal2_a", "gw9_goal_cal2_b", "gw9_goal_cal2_c")
+CALIBRATED_V2_CONTEXT_INDEX = {
+    task_id: index for index, task_id in enumerate(CALIBRATED_V2_CONTEXT_TASK_IDS)
+}
+CALIBRATED_V3_CONTEXT_TASK_IDS = ("gw9_goal_cal3_a", "gw9_goal_cal3_b", "gw9_goal_cal3_c")
+CALIBRATED_V3_CONTEXT_INDEX = {
+    task_id: index for index, task_id in enumerate(CALIBRATED_V3_CONTEXT_TASK_IDS)
+}
 
 
 def obs_to_state(
@@ -21,6 +42,32 @@ def obs_to_state(
 
     if obs_mode == "agent_target":
         return np.concatenate([agent, target], dtype=np.float32)
+
+    if obs_mode == "agent_context":
+        context = np.zeros(len(TASK_CONTEXT_TASK_IDS), dtype=np.float32)
+        context[TASK_CONTEXT_INDEX[task.task_id]] = 1.0
+        return np.concatenate([agent, context], dtype=np.float32)
+
+    if obs_mode == "agent_context_calibrated":
+        if task.task_id not in CALIBRATED_CONTEXT_INDEX:
+            raise ValueError(f"Task {task.task_id} is not supported by agent_context_calibrated")
+        context = np.zeros(len(CALIBRATED_CONTEXT_TASK_IDS), dtype=np.float32)
+        context[CALIBRATED_CONTEXT_INDEX[task.task_id]] = 1.0
+        return np.concatenate([agent, context], dtype=np.float32)
+
+    if obs_mode == "agent_context_calibrated_v2":
+        if task.task_id not in CALIBRATED_V2_CONTEXT_INDEX:
+            raise ValueError(f"Task {task.task_id} is not supported by agent_context_calibrated_v2")
+        context = np.zeros(len(CALIBRATED_V2_CONTEXT_TASK_IDS), dtype=np.float32)
+        context[CALIBRATED_V2_CONTEXT_INDEX[task.task_id]] = 1.0
+        return np.concatenate([agent, context], dtype=np.float32)
+
+    if obs_mode == "agent_context_calibrated_v3":
+        if task.task_id not in CALIBRATED_V3_CONTEXT_INDEX:
+            raise ValueError(f"Task {task.task_id} is not supported by agent_context_calibrated_v3")
+        context = np.zeros(len(CALIBRATED_V3_CONTEXT_TASK_IDS), dtype=np.float32)
+        context[CALIBRATED_V3_CONTEXT_INDEX[task.task_id]] = 1.0
+        return np.concatenate([agent, context], dtype=np.float32)
 
     if obs_mode == "grid_channels":
         grid = np.zeros((4, task.size, task.size), dtype=np.float32)

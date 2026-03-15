@@ -8,10 +8,10 @@ RUN_PROFILE="${RUN_PROFILE:-tier0_quick}"
 BENCHMARK="${BENCHMARK:-gw_goal_conditioned_balanced_ac_v1}"
 BENCHMARKS_CSV="${BENCHMARKS_CSV:-}"
 SESSION_GROUP="${SESSION_GROUP:-}"
-SEEDS_CSV="${SEEDS_CSV:-42,43,44}"
+SEEDS_CSV="${SEEDS_CSV:-}"
 LOG_ROOT="${LOG_ROOT:-$ROOT_DIR/logs/morphin_gridworld}"
 METHODS_CSV="${METHODS_CSV:-}"
-METHOD_SET="${METHOD_SET:-main}"
+METHOD_SET="${METHOD_SET:-}"
 TASK_IDS_CSV="${TASK_IDS_CSV:-}"
 SCRATCH_TASK_IDS_CSV="${SCRATCH_TASK_IDS_CSV:-}"
 SCRATCH_REFS_JSON="${SCRATCH_REFS_JSON:-}"
@@ -72,6 +72,145 @@ case "$RUN_PROFILE" in
     BATCH_SIZE="${BATCH_SIZE:-64}"
     EPS_DECAY_STEPS="${EPS_DECAY_STEPS:-10000}"
     ;;
+  tier2_hidden_long)
+    MODE="continual"
+    AUTO_BUILD_SCRATCH_REFS=1
+    METHOD_SET="${METHOD_SET:-core_no_detector}"
+    BENCHMARKS_CSV="${BENCHMARKS_CSV:-gw_hidden_goal_balanced_ab_v1,gw_hidden_goal_balanced_aba_v1,gw_hidden_goal_balanced_abab_v1,gw_hidden_goal_balanced_ababa_v1}"
+    SESSION_GROUP="${SESSION_GROUP:-campaign_hidden_long}"
+    EPISODES_PER_TASK="${EPISODES_PER_TASK:-400}"
+    EVAL_EPISODES="${EVAL_EPISODES:-20}"
+    EVAL_EVERY_EPISODES="${EVAL_EVERY_EPISODES:-25}"
+    WARMUP_STEPS="${WARMUP_STEPS:-500}"
+    BATCH_SIZE="${BATCH_SIZE:-64}"
+    EPS_DECAY_STEPS="${EPS_DECAY_STEPS:-10000}"
+    ;;
+  tier3_context9_pilot)
+    MODE="continual"
+    AUTO_BUILD_SCRATCH_REFS=1
+    METHOD_SET="${METHOD_SET:-segmented_shortlist}"
+    BENCHMARKS_CSV="${BENCHMARKS_CSV:-gw9_context_balanced_ab_v1,gw9_context_balanced_ba_v1,gw9_context_balanced_aba_v1,gw9_context_balanced_bab_v1}"
+    SESSION_GROUP="${SESSION_GROUP:-campaign_context9_pilot}"
+    SEEDS_CSV="${SEEDS_CSV:-42,43,44,45,46}"
+    EPISODES_PER_TASK="${EPISODES_PER_TASK:-400}"
+    MAX_STEPS_PER_EPISODE="${MAX_STEPS_PER_EPISODE:-250}"
+    EVAL_EPISODES="${EVAL_EPISODES:-20}"
+    EVAL_EVERY_EPISODES="${EVAL_EVERY_EPISODES:-25}"
+    WARMUP_STEPS="${WARMUP_STEPS:-1000}"
+    BATCH_SIZE="${BATCH_SIZE:-64}"
+    EPS_DECAY_STEPS="${EPS_DECAY_STEPS:-20000}"
+    EPS_DECAY_STEPS_AFTER_SWITCH="${EPS_DECAY_STEPS_AFTER_SWITCH:-4000}"
+    POST_SWITCH_STEPS="${POST_SWITCH_STEPS:-7500}"
+    ;;
+  tier3_context9_long)
+    MODE="continual"
+    AUTO_BUILD_SCRATCH_REFS=1
+    METHOD_SET="${METHOD_SET:-segmented_shortlist}"
+    BENCHMARKS_CSV="${BENCHMARKS_CSV:-gw9_context_balanced_ab_v1,gw9_context_balanced_ba_v1,gw9_context_balanced_aba_v1,gw9_context_balanced_bab_v1,gw9_context_balanced_abab_v1,gw9_context_balanced_baba_v1,gw9_context_balanced_ababa_v1,gw9_context_balanced_babab_v1}"
+    SESSION_GROUP="${SESSION_GROUP:-campaign_context9_long}"
+    SEEDS_CSV="${SEEDS_CSV:-42,43,44,45,46,47,48,49,50,51}"
+    EPISODES_PER_TASK="${EPISODES_PER_TASK:-400}"
+    MAX_STEPS_PER_EPISODE="${MAX_STEPS_PER_EPISODE:-250}"
+    EVAL_EPISODES="${EVAL_EPISODES:-20}"
+    EVAL_EVERY_EPISODES="${EVAL_EVERY_EPISODES:-25}"
+    WARMUP_STEPS="${WARMUP_STEPS:-1000}"
+    BATCH_SIZE="${BATCH_SIZE:-64}"
+    EPS_DECAY_STEPS="${EPS_DECAY_STEPS:-20000}"
+    EPS_DECAY_STEPS_AFTER_SWITCH="${EPS_DECAY_STEPS_AFTER_SWITCH:-4000}"
+    POST_SWITCH_STEPS="${POST_SWITCH_STEPS:-7500}"
+    ;;
+  tier3_context9_revisit_ablation)
+    MODE="continual"
+    AUTO_BUILD_SCRATCH_REFS=1
+    REUSE_SCRATCH_REFS_BY_TASK_SET="${REUSE_SCRATCH_REFS_BY_TASK_SET:-1}"
+    METHOD_SET="${METHOD_SET:-segmented_revisit_ablation}"
+    BENCHMARKS_CSV="${BENCHMARKS_CSV:-gw9_context_balanced_ab_v1,gw9_context_balanced_ba_v1,gw9_context_balanced_aba_v1,gw9_context_balanced_bab_v1}"
+    SESSION_GROUP="${SESSION_GROUP:-campaign_context9_revisit_ablation}"
+    SEEDS_CSV="${SEEDS_CSV:-42,43,44,45,46,47,48,49,50,51}"
+    EPISODES_PER_TASK="${EPISODES_PER_TASK:-400}"
+    MAX_STEPS_PER_EPISODE="${MAX_STEPS_PER_EPISODE:-250}"
+    SCRATCH_EPISODES_PER_TASK="${SCRATCH_EPISODES_PER_TASK:-800}"
+    SCRATCH_MAX_STEPS_PER_EPISODE="${SCRATCH_MAX_STEPS_PER_EPISODE:-250}"
+    EVAL_EPISODES="${EVAL_EPISODES:-20}"
+    EVAL_EVERY_EPISODES="${EVAL_EVERY_EPISODES:-25}"
+    WARMUP_STEPS="${WARMUP_STEPS:-1000}"
+    SCRATCH_WARMUP_STEPS="${SCRATCH_WARMUP_STEPS:-1000}"
+    BATCH_SIZE="${BATCH_SIZE:-64}"
+    SCRATCH_BATCH_SIZE="${SCRATCH_BATCH_SIZE:-64}"
+    EPS_DECAY_STEPS="${EPS_DECAY_STEPS:-20000}"
+    SCRATCH_EPS_DECAY_STEPS="${SCRATCH_EPS_DECAY_STEPS:-20000}"
+    EPS_DECAY_STEPS_AFTER_SWITCH="${EPS_DECAY_STEPS_AFTER_SWITCH:-4000}"
+    POST_SWITCH_STEPS="${POST_SWITCH_STEPS:-7500}"
+    SCRATCH_REF_MIN_VALID_FRACTION="${SCRATCH_REF_MIN_VALID_FRACTION:-0.8}"
+    ;;
+  tier4_context9_plus_diag)
+    MODE="continual"
+    AUTO_BUILD_SCRATCH_REFS=1
+    REUSE_SCRATCH_REFS_BY_TASK_SET="${REUSE_SCRATCH_REFS_BY_TASK_SET:-1}"
+    SCRATCH_GATE_ENABLED="${SCRATCH_GATE_ENABLED:-1}"
+    METHOD_SET="${METHOD_SET:-segmented_plus_shortlist}"
+    BENCHMARKS_CSV="${BENCHMARKS_CSV:-gw9_context_calibrated3_ab_v1,gw9_context_calibrated3_ba_v1,gw9_context_calibrated3_aba_v1,gw9_context_calibrated3_bab_v1,gw9_context_calibrated3_ac_v1,gw9_context_calibrated3_ca_v1,gw9_context_calibrated3_bc_v1,gw9_context_calibrated3_cb_v1,gw9_context_calibrated3_abc_v1,gw9_context_calibrated3_bac_v1}"
+    SESSION_GROUP="${SESSION_GROUP:-campaign_context9_plus_diag}"
+    SEEDS_CSV="${SEEDS_CSV:-42,43,44}"
+    EPISODES_PER_TASK="${EPISODES_PER_TASK:-400}"
+    MAX_STEPS_PER_EPISODE="${MAX_STEPS_PER_EPISODE:-250}"
+    SCRATCH_EPISODES_PER_TASK="${SCRATCH_EPISODES_PER_TASK:-800}"
+    SCRATCH_MAX_STEPS_PER_EPISODE="${SCRATCH_MAX_STEPS_PER_EPISODE:-250}"
+    EVAL_EPISODES="${EVAL_EPISODES:-20}"
+    EVAL_EVERY_EPISODES="${EVAL_EVERY_EPISODES:-25}"
+    WARMUP_STEPS="${WARMUP_STEPS:-1000}"
+    SCRATCH_WARMUP_STEPS="${SCRATCH_WARMUP_STEPS:-1000}"
+    BATCH_SIZE="${BATCH_SIZE:-64}"
+    SCRATCH_BATCH_SIZE="${SCRATCH_BATCH_SIZE:-64}"
+    EPS_DECAY_STEPS="${EPS_DECAY_STEPS:-20000}"
+    SCRATCH_EPS_DECAY_STEPS="${SCRATCH_EPS_DECAY_STEPS:-20000}"
+    EPS_DECAY_STEPS_AFTER_SWITCH="${EPS_DECAY_STEPS_AFTER_SWITCH:-4000}"
+    POST_SWITCH_STEPS="${POST_SWITCH_STEPS:-7500}"
+    SCRATCH_REF_MIN_VALID_FRACTION="${SCRATCH_REF_MIN_VALID_FRACTION:-0.8}"
+    ;;
+  thesis_goal_transfer)
+    MODE="continual"
+    AUTO_BUILD_SCRATCH_REFS=1
+    METHOD_SET="${METHOD_SET:-thesis_core}"
+    BENCHMARKS_CSV="${BENCHMARKS_CSV:-gw_goal_conditioned_balanced_ac_v1,gw_goal_conditioned_balanced_ca_v1,gw_goal_conditioned_balanced_aba_v1}"
+    SESSION_GROUP="${SESSION_GROUP:-thesis_goal_transfer}"
+    SEEDS_CSV="${SEEDS_CSV:-42,43,44,45,46,47,48,49,50,51,52,53,54,55,56}"
+    EPISODES_PER_TASK="${EPISODES_PER_TASK:-400}"
+    EVAL_EPISODES="${EVAL_EPISODES:-30}"
+    EVAL_EVERY_EPISODES="${EVAL_EVERY_EPISODES:-25}"
+    WARMUP_STEPS="${WARMUP_STEPS:-500}"
+    BATCH_SIZE="${BATCH_SIZE:-64}"
+    EPS_DECAY_STEPS="${EPS_DECAY_STEPS:-10000}"
+    ;;
+  thesis_hidden)
+    MODE="continual"
+    AUTO_BUILD_SCRATCH_REFS=1
+    METHOD_SET="${METHOD_SET:-thesis_core}"
+    BENCHMARKS_CSV="${BENCHMARKS_CSV:-gw_hidden_goal_balanced_ab_v1,gw_hidden_goal_balanced_aba_v1}"
+    SESSION_GROUP="${SESSION_GROUP:-thesis_hidden}"
+    SEEDS_CSV="${SEEDS_CSV:-42,43,44,45,46,47,48,49,50,51,52,53,54,55,56}"
+    EPISODES_PER_TASK="${EPISODES_PER_TASK:-400}"
+    EVAL_EPISODES="${EVAL_EPISODES:-30}"
+    EVAL_EVERY_EPISODES="${EVAL_EVERY_EPISODES:-25}"
+    WARMUP_STEPS="${WARMUP_STEPS:-500}"
+    BATCH_SIZE="${BATCH_SIZE:-64}"
+    EPS_DECAY_STEPS="${EPS_DECAY_STEPS:-10000}"
+    ARCHIVE_FRAC="${ARCHIVE_FRAC:-0.0}"
+    ;;
+  thesis_ablation)
+    MODE="continual"
+    AUTO_BUILD_SCRATCH_REFS=1
+    METHOD_SET="${METHOD_SET:-thesis_ablation}"
+    BENCHMARKS_CSV="${BENCHMARKS_CSV:-gw_goal_conditioned_balanced_ac_v1}"
+    SESSION_GROUP="${SESSION_GROUP:-thesis_ablation}"
+    SEEDS_CSV="${SEEDS_CSV:-42,43,44,45,46,47,48,49,50,51,52,53,54,55,56}"
+    EPISODES_PER_TASK="${EPISODES_PER_TASK:-400}"
+    EVAL_EPISODES="${EVAL_EPISODES:-30}"
+    EVAL_EVERY_EPISODES="${EVAL_EVERY_EPISODES:-25}"
+    WARMUP_STEPS="${WARMUP_STEPS:-500}"
+    BATCH_SIZE="${BATCH_SIZE:-64}"
+    EPS_DECAY_STEPS="${EPS_DECAY_STEPS:-10000}"
+    ;;
   *)
     MODE="continual"
     EPISODES_PER_TASK="${EPISODES_PER_TASK:-150}"
@@ -89,8 +228,20 @@ benchmark_defaults() {
     gw_hidden_goal_aba_v1)
       printf '%s\n%s\n' "agent_only" "gw_goal_a,gw_goal_b"
       ;;
-    gw_hidden_goal_balanced_aba_v1|gw_hidden_goal_balanced_ab_v1)
+    gw_hidden_goal_balanced_ab_v1|gw_hidden_goal_balanced_aba_v1|gw_hidden_goal_balanced_abab_v1|gw_hidden_goal_balanced_ababa_v1)
       printf '%s\n%s\n' "agent_only" "gw_goal_bal_a,gw_goal_bal_b"
+      ;;
+    gw9_context_balanced_ab_v1|gw9_context_balanced_ba_v1|gw9_context_balanced_aba_v1|gw9_context_balanced_bab_v1|gw9_context_balanced_abab_v1|gw9_context_balanced_baba_v1|gw9_context_balanced_ababa_v1|gw9_context_balanced_babab_v1)
+      printf '%s\n%s\n' "agent_context" "gw9_goal_bal_a,gw9_goal_bal_b"
+      ;;
+    gw9_context_calibrated_ab_v1|gw9_context_calibrated_ba_v1|gw9_context_calibrated_aba_v1|gw9_context_calibrated_bab_v1|gw9_context_calibrated_ac_v1|gw9_context_calibrated_ca_v1|gw9_context_calibrated_bc_v1|gw9_context_calibrated_cb_v1|gw9_context_calibrated_abc_v1|gw9_context_calibrated_bac_v1)
+      printf '%s\n%s\n' "agent_context_calibrated" "gw9_goal_cal_a,gw9_goal_cal_b,gw9_goal_cal_c"
+      ;;
+    gw9_context_calibrated2_ab_v1|gw9_context_calibrated2_ba_v1|gw9_context_calibrated2_aba_v1|gw9_context_calibrated2_bab_v1|gw9_context_calibrated2_ac_v1|gw9_context_calibrated2_ca_v1|gw9_context_calibrated2_bc_v1|gw9_context_calibrated2_cb_v1|gw9_context_calibrated2_abc_v1|gw9_context_calibrated2_bac_v1)
+      printf '%s\n%s\n' "agent_context_calibrated_v2" "gw9_goal_cal2_a,gw9_goal_cal2_b,gw9_goal_cal2_c"
+      ;;
+    gw9_context_calibrated3_ab_v1|gw9_context_calibrated3_ba_v1|gw9_context_calibrated3_aba_v1|gw9_context_calibrated3_bab_v1|gw9_context_calibrated3_ac_v1|gw9_context_calibrated3_ca_v1|gw9_context_calibrated3_bc_v1|gw9_context_calibrated3_cb_v1|gw9_context_calibrated3_abc_v1|gw9_context_calibrated3_bac_v1)
+      printf '%s\n%s\n' "agent_context_calibrated_v3" "gw9_goal_cal3_a,gw9_goal_cal3_b,gw9_goal_cal3_c"
       ;;
     gw_hidden_goal_balanced_ac_v1)
       printf '%s\n%s\n' "agent_only" "gw_goal_bal_a,gw_goal_bal_c"
@@ -130,6 +281,8 @@ if [[ ${#BENCHMARKS[@]} -eq 0 ]]; then
   exit 1
 fi
 
+SEEDS_CSV="${SEEDS_CSV:-42,43,44}"
+
 for benchmark_name in "${BENCHMARKS[@]}"; do
   if ! benchmark_defaults "$benchmark_name" >/dev/null; then
     echo "Unknown benchmark: $benchmark_name" >&2
@@ -152,9 +305,21 @@ DETECTOR_MAX_DELAY_EPISODES="${DETECTOR_MAX_DELAY_EPISODES:-25}"
 MAX_STEPS_PER_EPISODE="${MAX_STEPS_PER_EPISODE:-150}"
 EVAL_DENSE_EVERY_EPISODES="${EVAL_DENSE_EVERY_EPISODES:-1}"
 EVAL_DENSE_WINDOW_EPISODES="${EVAL_DENSE_WINDOW_EPISODES:-25}"
+SCRATCH_EPISODES_PER_TASK="${SCRATCH_EPISODES_PER_TASK:-$EPISODES_PER_TASK}"
+SCRATCH_MAX_STEPS_PER_EPISODE="${SCRATCH_MAX_STEPS_PER_EPISODE:-$MAX_STEPS_PER_EPISODE}"
+SCRATCH_EVAL_EPISODES="${SCRATCH_EVAL_EPISODES:-$EVAL_EPISODES}"
+SCRATCH_EVAL_EVERY_EPISODES="${SCRATCH_EVAL_EVERY_EPISODES:-$EVAL_EVERY_EPISODES}"
+SCRATCH_EVAL_DENSE_EVERY_EPISODES="${SCRATCH_EVAL_DENSE_EVERY_EPISODES:-$EVAL_DENSE_EVERY_EPISODES}"
+SCRATCH_EVAL_DENSE_WINDOW_EPISODES="${SCRATCH_EVAL_DENSE_WINDOW_EPISODES:-$EVAL_DENSE_WINDOW_EPISODES}"
+SCRATCH_WARMUP_STEPS="${SCRATCH_WARMUP_STEPS:-$WARMUP_STEPS}"
+SCRATCH_BATCH_SIZE="${SCRATCH_BATCH_SIZE:-$BATCH_SIZE}"
+SCRATCH_EPS_DECAY_STEPS="${SCRATCH_EPS_DECAY_STEPS:-$EPS_DECAY_STEPS}"
 SEGMENTED_KEEP_TAIL="${SEGMENTED_KEEP_TAIL:-512}"
 SEGMENTED_RECENT_ONLY_STEPS="${SEGMENTED_RECENT_ONLY_STEPS:-1000}"
 SEGMENTED_MIN_RECENT_SAMPLES="${SEGMENTED_MIN_RECENT_SAMPLES:-256}"
+SEGMENTED_REVISIT_RECENT_MIX_START="${SEGMENTED_REVISIT_RECENT_MIX_START:-0.5}"
+SEGMENTED_REVISIT_RECENT_MIX_END="${SEGMENTED_REVISIT_RECENT_MIX_END:-0.5}"
+SEGMENTED_REVISIT_RECENT_ONLY_STEPS="${SEGMENTED_REVISIT_RECENT_ONLY_STEPS:-0}"
 ARCHIVE_FRAC="${ARCHIVE_FRAC:-0.25}"
 RECENT_MIX_START="${RECENT_MIX_START:-0.8}"
 RECENT_MIX_END="${RECENT_MIX_END:-0.5}"
@@ -166,6 +331,12 @@ TD_K="${TD_K:-1.0}"
 SCRATCH_REF_MIN_FINAL_SUCCESS="${SCRATCH_REF_MIN_FINAL_SUCCESS:-0.8}"
 SCRATCH_REF_MIN_VALID_RUNS="${SCRATCH_REF_MIN_VALID_RUNS:-3}"
 SCRATCH_REF_MIN_VALID_FRACTION="${SCRATCH_REF_MIN_VALID_FRACTION:-0.6}"
+REUSE_SCRATCH_REFS_BY_TASK_SET="${REUSE_SCRATCH_REFS_BY_TASK_SET:-0}"
+SCRATCH_GATE_ENABLED="${SCRATCH_GATE_ENABLED:-0}"
+SCRATCH_GATE_REQUIRE_STABLE="${SCRATCH_GATE_REQUIRE_STABLE:-1}"
+SCRATCH_GATE_MIN_PASSING_FRACTION="${SCRATCH_GATE_MIN_PASSING_FRACTION:-1.0}"
+SCRATCH_GATE_MIN_FINAL_SUCCESS="${SCRATCH_GATE_MIN_FINAL_SUCCESS:-$SCRATCH_REF_MIN_FINAL_SUCCESS}"
+METHOD_SET="${METHOD_SET:-main}"
 
 METHOD_SOURCE="set:${METHOD_SET}"
 if [[ -z "$METHODS_CSV" ]]; then
@@ -178,13 +349,31 @@ if [[ -z "$METHODS_CSV" ]]; then
         METHODS_CSV="ddqn_vanilla,oracle_reset,oracle_segmented,oracle_segmented_td"
         ;;
       core_no_detector)
-        METHODS_CSV="ddqn_vanilla,oracle_reset,oracle_segmented_td,morphin_lite"
+        METHODS_CSV="ddqn_vanilla,oracle_reset,oracle_segmented,oracle_segmented_td,morphin_lite"
+        ;;
+      segmented_shortlist)
+        METHODS_CSV="ddqn_vanilla,oracle_reset,oracle_segmented,morphin_lite"
+        ;;
+      segmented_plus_shortlist)
+        METHODS_CSV="ddqn_vanilla,oracle_reset,oracle_segmented,oracle_segmented_td,oracle_segmented_td_plus"
+        ;;
+      segmented_td_ablation)
+        METHODS_CSV="ddqn_vanilla,oracle_reset,oracle_segmented,oracle_segmented_td,morphin_lite"
+        ;;
+      segmented_revisit_ablation)
+        METHODS_CSV="ddqn_vanilla,oracle_reset,oracle_segmented,oracle_segmented_revisit_aware,oracle_segmented_td,oracle_segmented_td_revisit_aware"
         ;;
       morphin_ablation)
         METHODS_CSV="ddqn_vanilla,oracle_reset,oracle_segmented,oracle_segmented_td,morphin_lite,morphin_full,morphin_segmented"
         ;;
       full)
         METHODS_CSV="ddqn_vanilla,oracle_reset,detector_reset_only,oracle_segmented,oracle_segmented_td,morphin_lite,morphin_full,morphin_segmented"
+        ;;
+      thesis_core)
+        METHODS_CSV="ddqn_vanilla,oracle_reset,oracle_segmented,morphin_detect"
+        ;;
+      thesis_ablation)
+        METHODS_CSV="ddqn_vanilla,oracle_reset,oracle_segmented,oracle_segmented_td,morphin_detect,morphin_detect_seg"
         ;;
       *)
         echo "Unknown METHOD_SET: $METHOD_SET" >&2
@@ -223,10 +412,13 @@ log "Profile: $RUN_PROFILE | Mode: $MODE | Benchmarks: ${BENCHMARKS[*]} | Seeds:
 log "Obs mode: $OBS_MODE | Method set: $METHOD_SET | Methods: $METHODS_CSV"
 log "Episodes/task: $EPISODES_PER_TASK | Eval every: $EVAL_EVERY_EPISODES | Eval episodes: $EVAL_EPISODES"
 log "Warmup: $WARMUP_STEPS | Batch: $BATCH_SIZE | Eps decay: $EPS_DECAY_STEPS | Auto scratch refs: $AUTO_BUILD_SCRATCH_REFS"
+log "Scratch stage: episodes/task=$SCRATCH_EPISODES_PER_TASK max_steps=$SCRATCH_MAX_STEPS_PER_EPISODE eval_every=$SCRATCH_EVAL_EVERY_EPISODES eval_episodes=$SCRATCH_EVAL_EPISODES warmup=$SCRATCH_WARMUP_STEPS batch=$SCRATCH_BATCH_SIZE eps_decay=$SCRATCH_EPS_DECAY_STEPS reuse_by_task_set=$REUSE_SCRATCH_REFS_BY_TASK_SET"
 log "Success threshold: $SUCCESS_THRESHOLD | Consecutive evals for threshold: $THRESHOLD_MIN_CONSECUTIVE_EVALS"
 log "Scratch refs: min_final_success=$SCRATCH_REF_MIN_FINAL_SUCCESS min_valid_runs=$SCRATCH_REF_MIN_VALID_RUNS min_valid_fraction=$SCRATCH_REF_MIN_VALID_FRACTION"
+log "Scratch gate: enabled=$SCRATCH_GATE_ENABLED require_stable=$SCRATCH_GATE_REQUIRE_STABLE min_passing_fraction=$SCRATCH_GATE_MIN_PASSING_FRACTION min_final_success=$SCRATCH_GATE_MIN_FINAL_SUCCESS"
 log "Switch epsilon reset: value=$EPS_RESET_VALUE decay_steps=$EPS_DECAY_STEPS_AFTER_SWITCH"
 log "Replay: archive_frac=$ARCHIVE_FRAC recent_mix=$RECENT_MIX_START->$RECENT_MIX_END post_switch_steps=$POST_SWITCH_STEPS keep_tail=$SEGMENTED_KEEP_TAIL"
+log "Replay revisit-aware: revisit_recent_mix=$SEGMENTED_REVISIT_RECENT_MIX_START->$SEGMENTED_REVISIT_RECENT_MIX_END revisit_recent_only_steps=$SEGMENTED_REVISIT_RECENT_ONLY_STEPS"
 log "TD weighting: alpha_max_mult=$ALPHA_MAX_MULT td_k=$TD_K"
 log "Dense eval: every $EVAL_DENSE_EVERY_EPISODES within $EVAL_DENSE_WINDOW_EPISODES eps after switch | Max steps/ep: $MAX_STEPS_PER_EPISODE"
 
@@ -269,7 +461,47 @@ build_common_args() {
     --post-switch-steps "$POST_SWITCH_STEPS" \
     --segmented-keep-tail "$SEGMENTED_KEEP_TAIL" \
     --segmented-recent-only-steps "$SEGMENTED_RECENT_ONLY_STEPS" \
-    --segmented-min-recent-samples "$SEGMENTED_MIN_RECENT_SAMPLES"
+    --segmented-min-recent-samples "$SEGMENTED_MIN_RECENT_SAMPLES" \
+    --segmented-revisit-recent-mix-start "$SEGMENTED_REVISIT_RECENT_MIX_START" \
+    --segmented-revisit-recent-mix-end "$SEGMENTED_REVISIT_RECENT_MIX_END" \
+    --segmented-revisit-recent-only-steps "$SEGMENTED_REVISIT_RECENT_ONLY_STEPS"
+}
+
+build_scratch_args() {
+  local benchmark="$1"
+  local obs_mode="$2"
+  printf '%s\0' \
+    --benchmark "$benchmark" \
+    --episodes-per-task "$SCRATCH_EPISODES_PER_TASK" \
+    --max-steps-per-episode "$SCRATCH_MAX_STEPS_PER_EPISODE" \
+    --eval-episodes "$SCRATCH_EVAL_EPISODES" \
+    --eval-every-episodes "$SCRATCH_EVAL_EVERY_EPISODES" \
+    --eval-dense-every-episodes "$SCRATCH_EVAL_DENSE_EVERY_EPISODES" \
+    --eval-dense-window-episodes "$SCRATCH_EVAL_DENSE_WINDOW_EPISODES" \
+    --obs-mode "$obs_mode" \
+    --warmup-steps "$SCRATCH_WARMUP_STEPS" \
+    --batch-size "$SCRATCH_BATCH_SIZE" \
+    --eps-decay-steps "$SCRATCH_EPS_DECAY_STEPS" \
+    --eps-reset-value "$EPS_RESET_VALUE" \
+    --eps-decay-steps-after-switch "$EPS_DECAY_STEPS_AFTER_SWITCH" \
+    --alpha-max-mult "$ALPHA_MAX_MULT" \
+    --td-k "$TD_K" \
+    --learning-rate "$LEARNING_RATE" \
+    --tau "$TAU" \
+    --gamma "$GAMMA" \
+    --success-threshold "$SUCCESS_THRESHOLD" \
+    --threshold-min-consecutive-evals "$THRESHOLD_MIN_CONSECUTIVE_EVALS" \
+    --detector-max-delay-episodes "$DETECTOR_MAX_DELAY_EPISODES" \
+    --archive-frac "$ARCHIVE_FRAC" \
+    --recent-mix-start "$RECENT_MIX_START" \
+    --recent-mix-end "$RECENT_MIX_END" \
+    --post-switch-steps "$POST_SWITCH_STEPS" \
+    --segmented-keep-tail "$SEGMENTED_KEEP_TAIL" \
+    --segmented-recent-only-steps "$SEGMENTED_RECENT_ONLY_STEPS" \
+    --segmented-min-recent-samples "$SEGMENTED_MIN_RECENT_SAMPLES" \
+    --segmented-revisit-recent-mix-start "$SEGMENTED_REVISIT_RECENT_MIX_START" \
+    --segmented-revisit-recent-mix-end "$SEGMENTED_REVISIT_RECENT_MIX_END" \
+    --segmented-revisit-recent-only-steps "$SEGMENTED_REVISIT_RECENT_ONLY_STEPS"
 }
 
 run_scratch_stage_for_benchmark() {
@@ -281,7 +513,7 @@ run_scratch_stage_for_benchmark() {
   local run_idx=0
   local total_runs=$(( ${#SEEDS[@]} * ${#scratch_tasks[@]} ))
   local common_args=()
-  mapfile -d '' -t common_args < <(build_common_args "$benchmark" "$obs_mode")
+  mapfile -d '' -t common_args < <(build_scratch_args "$benchmark" "$obs_mode")
   for seed in "${SEEDS[@]}"; do
     for task_id in "${scratch_tasks[@]}"; do
       run_idx=$((run_idx + 1))
@@ -351,11 +583,34 @@ run_continual_stage_for_benchmark() {
   done
 }
 
+validate_scratch_gate() {
+  local refs_json="$1"
+  local task_ids_csv="$2"
+  local benchmark="$3"
+  if [[ "$SCRATCH_GATE_ENABLED" != "1" || -z "$refs_json" ]]; then
+    return 0
+  fi
+  log "Validating scratch refs for $benchmark before continual stage"
+  local args=(
+    -m rl.rl_uniandes.drl.morphin.validate_scratch_refs
+    --refs-json "$refs_json"
+    --task-ids-csv "$task_ids_csv"
+    --min-final-success "$SCRATCH_GATE_MIN_FINAL_SUCCESS"
+    --min-passing-fraction "$SCRATCH_GATE_MIN_PASSING_FRACTION"
+  )
+  if [[ "$SCRATCH_GATE_REQUIRE_STABLE" == "1" ]]; then
+    args+=(--require-stable)
+  fi
+  py_run "${args[@]}"
+}
+
 SCRATCH_REFS_DIR="$SESSION_ROOT/scratch_refs"
 mkdir -p "$SCRATCH_REFS_DIR"
 SCRATCH_REFS_MAP_JSON="$SESSION_ROOT/scratch_refs_by_benchmark.json"
 printf '{\n' >"$SCRATCH_REFS_MAP_JSON"
 scratch_refs_first=1
+declare -A SHARED_SCRATCH_REFS_JSON_BY_KEY
+shared_scratch_idx=0
 
 for benchmark in "${BENCHMARKS[@]}"; do
   readarray -t BENCHMARK_DEFAULTS < <(benchmark_defaults "$benchmark")
@@ -375,16 +630,39 @@ for benchmark in "${BENCHMARKS[@]}"; do
   fi
 
   if [[ "$AUTO_BUILD_SCRATCH_REFS" == "1" && -z "$SCRATCH_REFS_JSON" ]]; then
-    log "Running scratch stage for $benchmark to build scratch references"
-    run_scratch_stage_for_benchmark "$benchmark" "$benchmark_obs_mode" "$benchmark_scratch_tasks_csv" "$benchmark_runs_root"
-    benchmark_scratch_refs_json="$SCRATCH_REFS_DIR/${benchmark}.json"
-    py_run -m rl.rl_uniandes.drl.morphin.build_scratch_refs \
-      --root-dir "$benchmark_runs_root" \
-      --output-json "$benchmark_scratch_refs_json" \
-      --min-final-success "$SCRATCH_REF_MIN_FINAL_SUCCESS" \
-      --min-valid-runs "$SCRATCH_REF_MIN_VALID_RUNS" \
-      --min-valid-fraction "$SCRATCH_REF_MIN_VALID_FRACTION"
-    log "Scratch refs for $benchmark built at $benchmark_scratch_refs_json"
+    if [[ "$REUSE_SCRATCH_REFS_BY_TASK_SET" == "1" ]]; then
+      scratch_cache_key="${benchmark_obs_mode}|${benchmark_scratch_tasks_csv}|${SEEDS_CSV}|${SCRATCH_EPISODES_PER_TASK}|${SCRATCH_MAX_STEPS_PER_EPISODE}|${SCRATCH_EVAL_EPISODES}|${SCRATCH_EVAL_EVERY_EPISODES}|${SCRATCH_EVAL_DENSE_EVERY_EPISODES}|${SCRATCH_EVAL_DENSE_WINDOW_EPISODES}|${SCRATCH_WARMUP_STEPS}|${SCRATCH_BATCH_SIZE}|${SCRATCH_EPS_DECAY_STEPS}|${SUCCESS_THRESHOLD}|${THRESHOLD_MIN_CONSECUTIVE_EVALS}|${LEARNING_RATE}|${TAU}|${GAMMA}"
+      if [[ -n "${SHARED_SCRATCH_REFS_JSON_BY_KEY[$scratch_cache_key]:-}" ]]; then
+        benchmark_scratch_refs_json="${SHARED_SCRATCH_REFS_JSON_BY_KEY[$scratch_cache_key]}"
+        log "Reusing shared scratch refs for $benchmark from $benchmark_scratch_refs_json"
+      else
+        shared_scratch_idx=$((shared_scratch_idx + 1))
+        shared_scratch_root="$SESSION_ROOT/shared_scratch/cache_${shared_scratch_idx}"
+        mkdir -p "$shared_scratch_root"
+        log "Running shared scratch stage for $benchmark to build reusable scratch references"
+        run_scratch_stage_for_benchmark "$benchmark" "$benchmark_obs_mode" "$benchmark_scratch_tasks_csv" "$shared_scratch_root"
+        benchmark_scratch_refs_json="$SCRATCH_REFS_DIR/shared_cache_${shared_scratch_idx}.json"
+        py_run -m rl.rl_uniandes.drl.morphin.build_scratch_refs \
+          --root-dir "$shared_scratch_root" \
+          --output-json "$benchmark_scratch_refs_json" \
+          --min-final-success "$SCRATCH_REF_MIN_FINAL_SUCCESS" \
+          --min-valid-runs "$SCRATCH_REF_MIN_VALID_RUNS" \
+          --min-valid-fraction "$SCRATCH_REF_MIN_VALID_FRACTION"
+        SHARED_SCRATCH_REFS_JSON_BY_KEY[$scratch_cache_key]="$benchmark_scratch_refs_json"
+        log "Shared scratch refs built at $benchmark_scratch_refs_json"
+      fi
+    else
+      log "Running scratch stage for $benchmark to build scratch references"
+      run_scratch_stage_for_benchmark "$benchmark" "$benchmark_obs_mode" "$benchmark_scratch_tasks_csv" "$benchmark_runs_root"
+      benchmark_scratch_refs_json="$SCRATCH_REFS_DIR/${benchmark}.json"
+      py_run -m rl.rl_uniandes.drl.morphin.build_scratch_refs \
+        --root-dir "$benchmark_runs_root" \
+        --output-json "$benchmark_scratch_refs_json" \
+        --min-final-success "$SCRATCH_REF_MIN_FINAL_SUCCESS" \
+        --min-valid-runs "$SCRATCH_REF_MIN_VALID_RUNS" \
+        --min-valid-fraction "$SCRATCH_REF_MIN_VALID_FRACTION"
+      log "Scratch refs for $benchmark built at $benchmark_scratch_refs_json"
+    fi
   fi
 
   if [[ -n "$benchmark_scratch_refs_json" ]]; then
@@ -394,6 +672,8 @@ for benchmark in "${BENCHMARKS[@]}"; do
     scratch_refs_first=0
     printf '  "%s": "%s"' "$benchmark" "$benchmark_scratch_refs_json" >>"$SCRATCH_REFS_MAP_JSON"
   fi
+
+  validate_scratch_gate "$benchmark_scratch_refs_json" "$benchmark_scratch_tasks_csv" "$benchmark"
 
   run_continual_stage_for_benchmark "$benchmark" "$benchmark_obs_mode" "$benchmark_runs_root" "$benchmark_scratch_refs_json" "$benchmark_task_ids_csv"
 done
@@ -440,6 +720,11 @@ cat >"$SESSION_ROOT/session_config.json" <<JSON
   "scratch_ref_min_final_success": $SCRATCH_REF_MIN_FINAL_SUCCESS,
   "scratch_ref_min_valid_runs": $SCRATCH_REF_MIN_VALID_RUNS,
   "scratch_ref_min_valid_fraction": $SCRATCH_REF_MIN_VALID_FRACTION,
+  "reuse_scratch_refs_by_task_set": $REUSE_SCRATCH_REFS_BY_TASK_SET,
+  "scratch_gate_enabled": $SCRATCH_GATE_ENABLED,
+  "scratch_gate_require_stable": $SCRATCH_GATE_REQUIRE_STABLE,
+  "scratch_gate_min_passing_fraction": $SCRATCH_GATE_MIN_PASSING_FRACTION,
+  "scratch_gate_min_final_success": $SCRATCH_GATE_MIN_FINAL_SUCCESS,
   "warmup_steps": $WARMUP_STEPS,
   "batch_size": $BATCH_SIZE,
   "eps_decay_steps": $EPS_DECAY_STEPS,
@@ -455,6 +740,18 @@ cat >"$SESSION_ROOT/session_config.json" <<JSON
   "segmented_keep_tail": $SEGMENTED_KEEP_TAIL,
   "segmented_recent_only_steps": $SEGMENTED_RECENT_ONLY_STEPS,
   "segmented_min_recent_samples": $SEGMENTED_MIN_RECENT_SAMPLES,
+  "segmented_revisit_recent_mix_start": $SEGMENTED_REVISIT_RECENT_MIX_START,
+  "segmented_revisit_recent_mix_end": $SEGMENTED_REVISIT_RECENT_MIX_END,
+  "segmented_revisit_recent_only_steps": $SEGMENTED_REVISIT_RECENT_ONLY_STEPS,
+  "scratch_episodes_per_task": $SCRATCH_EPISODES_PER_TASK,
+  "scratch_max_steps_per_episode": $SCRATCH_MAX_STEPS_PER_EPISODE,
+  "scratch_eval_episodes": $SCRATCH_EVAL_EPISODES,
+  "scratch_eval_every_episodes": $SCRATCH_EVAL_EVERY_EPISODES,
+  "scratch_eval_dense_every_episodes": $SCRATCH_EVAL_DENSE_EVERY_EPISODES,
+  "scratch_eval_dense_window_episodes": $SCRATCH_EVAL_DENSE_WINDOW_EPISODES,
+  "scratch_warmup_steps": $SCRATCH_WARMUP_STEPS,
+  "scratch_batch_size": $SCRATCH_BATCH_SIZE,
+  "scratch_eps_decay_steps": $SCRATCH_EPS_DECAY_STEPS,
   "auto_build_scratch_refs": $AUTO_BUILD_SCRATCH_REFS,
   "scratch_refs_json": "${SCRATCH_REFS_JSON}",
   "scratch_refs_map_json": "${SCRATCH_REFS_MAP_JSON}"
