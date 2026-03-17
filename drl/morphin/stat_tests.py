@@ -114,7 +114,7 @@ def main() -> int:
         "results": all_results,
     }
 
-    output_text = json.dumps(output, indent=2)
+    output_text = json.dumps(output, indent=2, default=str)
     print(output_text)
 
     if args.output_json:

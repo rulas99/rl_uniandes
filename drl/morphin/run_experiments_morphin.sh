@@ -211,6 +211,172 @@ case "$RUN_PROFILE" in
     BATCH_SIZE="${BATCH_SIZE:-64}"
     EPS_DECAY_STEPS="${EPS_DECAY_STEPS:-10000}"
     ;;
+  thesis_9x9_quick)
+    # 9x9 balanced GridWorld — fast iteration profile for hyperparameter tuning.
+    # 5 seeds, 300 eps/task, all three benchmarks (AB, AC, ABA).
+    # Use this to validate eps_reset and archive_frac changes before committing to
+    # the full 15-seed thesis_9x9_goalcond run (~2-3 hrs vs ~12-14 hrs).
+    MODE="continual"
+    AUTO_BUILD_SCRATCH_REFS=1
+    REUSE_SCRATCH_REFS_BY_TASK_SET="${REUSE_SCRATCH_REFS_BY_TASK_SET:-1}"
+    METHOD_SET="${METHOD_SET:-thesis_core}"
+    BENCHMARKS_CSV="${BENCHMARKS_CSV:-gw9_goal_balanced_ab_v1,gw9_goal_balanced_ac_v1,gw9_goal_balanced_aba_v1}"
+    SESSION_GROUP="${SESSION_GROUP:-thesis_9x9_quick}"
+    SEEDS_CSV="${SEEDS_CSV:-42,43,44,45,46}"
+    EPISODES_PER_TASK="${EPISODES_PER_TASK:-300}"
+    MAX_STEPS_PER_EPISODE="${MAX_STEPS_PER_EPISODE:-250}"
+    SCRATCH_EPISODES_PER_TASK="${SCRATCH_EPISODES_PER_TASK:-500}"
+    SCRATCH_MAX_STEPS_PER_EPISODE="${SCRATCH_MAX_STEPS_PER_EPISODE:-250}"
+    EVAL_EPISODES="${EVAL_EPISODES:-15}"
+    EVAL_EVERY_EPISODES="${EVAL_EVERY_EPISODES:-25}"
+    WARMUP_STEPS="${WARMUP_STEPS:-750}"
+    SCRATCH_WARMUP_STEPS="${SCRATCH_WARMUP_STEPS:-750}"
+    BATCH_SIZE="${BATCH_SIZE:-64}"
+    EPS_DECAY_STEPS="${EPS_DECAY_STEPS:-15000}"
+    SCRATCH_EPS_DECAY_STEPS="${SCRATCH_EPS_DECAY_STEPS:-15000}"
+    # Corrected eps-reset: 0.9 initial value, 30 000 steps decay ≈ 120 post-switch
+    # episodes (vs. the old 0.4 / 3 000 = 12 episodes that caused binary failure on B).
+    EPS_RESET_VALUE="${EPS_RESET_VALUE:-0.9}"
+    EPS_DECAY_STEPS_AFTER_SWITCH="${EPS_DECAY_STEPS_AFTER_SWITCH:-30000}"
+    POST_SWITCH_STEPS="${POST_SWITCH_STEPS:-7500}"
+    # Reduced archive to limit task-A interference on new-task discovery.
+    ARCHIVE_FRAC="${ARCHIVE_FRAC:-0.10}"
+    HIDDEN_SIZES_CSV="${HIDDEN_SIZES_CSV:-128,128}"
+    BUFFER_CAPACITY="${BUFFER_CAPACITY:-20000}"
+    RECENT_BUFFER_CAPACITY="${RECENT_BUFFER_CAPACITY:-12000}"
+    ARCHIVE_BUFFER_CAPACITY="${ARCHIVE_BUFFER_CAPACITY:-8000}"
+    SCRATCH_BUFFER_CAPACITY="${SCRATCH_BUFFER_CAPACITY:-20000}"
+    SCRATCH_REF_MIN_VALID_FRACTION="${SCRATCH_REF_MIN_VALID_FRACTION:-0.7}"
+    ;;
+  thesis_9x9_goalcond)
+    # 9x9 balanced GridWorld, goal-conditioned (agent_target obs mode).
+    # 2-task sequences AB, AC, and revisit ABA — mirrors the 5x5 thesis_goal_transfer design.
+    MODE="continual"
+    AUTO_BUILD_SCRATCH_REFS=1
+    REUSE_SCRATCH_REFS_BY_TASK_SET="${REUSE_SCRATCH_REFS_BY_TASK_SET:-1}"
+    METHOD_SET="${METHOD_SET:-thesis_core}"
+    BENCHMARKS_CSV="${BENCHMARKS_CSV:-gw9_goal_balanced_ab_v1,gw9_goal_balanced_ac_v1,gw9_goal_balanced_aba_v1}"
+    SESSION_GROUP="${SESSION_GROUP:-thesis_9x9_goalcond}"
+    SEEDS_CSV="${SEEDS_CSV:-42,43,44,45,46,47,48,49,50,51,52,53,54,55,56}"
+    EPISODES_PER_TASK="${EPISODES_PER_TASK:-600}"
+    MAX_STEPS_PER_EPISODE="${MAX_STEPS_PER_EPISODE:-250}"
+    SCRATCH_EPISODES_PER_TASK="${SCRATCH_EPISODES_PER_TASK:-800}"
+    SCRATCH_MAX_STEPS_PER_EPISODE="${SCRATCH_MAX_STEPS_PER_EPISODE:-250}"
+    EVAL_EPISODES="${EVAL_EPISODES:-30}"
+    EVAL_EVERY_EPISODES="${EVAL_EVERY_EPISODES:-25}"
+    WARMUP_STEPS="${WARMUP_STEPS:-750}"
+    SCRATCH_WARMUP_STEPS="${SCRATCH_WARMUP_STEPS:-750}"
+    BATCH_SIZE="${BATCH_SIZE:-64}"
+    EPS_DECAY_STEPS="${EPS_DECAY_STEPS:-15000}"
+    SCRATCH_EPS_DECAY_STEPS="${SCRATCH_EPS_DECAY_STEPS:-15000}"
+    EPS_RESET_VALUE="${EPS_RESET_VALUE:-0.9}"
+    EPS_DECAY_STEPS_AFTER_SWITCH="${EPS_DECAY_STEPS_AFTER_SWITCH:-30000}"
+    POST_SWITCH_STEPS="${POST_SWITCH_STEPS:-7500}"
+    ARCHIVE_FRAC="${ARCHIVE_FRAC:-0.10}"
+    HIDDEN_SIZES_CSV="${HIDDEN_SIZES_CSV:-128,128}"
+    BUFFER_CAPACITY="${BUFFER_CAPACITY:-20000}"
+    RECENT_BUFFER_CAPACITY="${RECENT_BUFFER_CAPACITY:-12000}"
+    ARCHIVE_BUFFER_CAPACITY="${ARCHIVE_BUFFER_CAPACITY:-8000}"
+    SCRATCH_BUFFER_CAPACITY="${SCRATCH_BUFFER_CAPACITY:-20000}"
+    SCRATCH_REF_MIN_VALID_FRACTION="${SCRATCH_REF_MIN_VALID_FRACTION:-0.7}"
+    ;;
+  thesis_9x9_multitask)
+    # 9x9 balanced GridWorld, 3-4 task sequences (ABC, ABCA).
+    # Tests archive accumulation, forward transfer and revisit across 3+ tasks.
+    MODE="continual"
+    AUTO_BUILD_SCRATCH_REFS=1
+    REUSE_SCRATCH_REFS_BY_TASK_SET="${REUSE_SCRATCH_REFS_BY_TASK_SET:-1}"
+    METHOD_SET="${METHOD_SET:-thesis_core}"
+    BENCHMARKS_CSV="${BENCHMARKS_CSV:-gw9_goal_balanced_abc_v1,gw9_goal_balanced_abca_v1}"
+    SESSION_GROUP="${SESSION_GROUP:-thesis_9x9_multitask}"
+    SEEDS_CSV="${SEEDS_CSV:-42,43,44,45,46,47,48,49,50,51,52,53,54,55,56}"
+    EPISODES_PER_TASK="${EPISODES_PER_TASK:-600}"
+    MAX_STEPS_PER_EPISODE="${MAX_STEPS_PER_EPISODE:-250}"
+    SCRATCH_EPISODES_PER_TASK="${SCRATCH_EPISODES_PER_TASK:-800}"
+    SCRATCH_MAX_STEPS_PER_EPISODE="${SCRATCH_MAX_STEPS_PER_EPISODE:-250}"
+    EVAL_EPISODES="${EVAL_EPISODES:-30}"
+    EVAL_EVERY_EPISODES="${EVAL_EVERY_EPISODES:-25}"
+    WARMUP_STEPS="${WARMUP_STEPS:-750}"
+    SCRATCH_WARMUP_STEPS="${SCRATCH_WARMUP_STEPS:-750}"
+    BATCH_SIZE="${BATCH_SIZE:-64}"
+    EPS_DECAY_STEPS="${EPS_DECAY_STEPS:-15000}"
+    SCRATCH_EPS_DECAY_STEPS="${SCRATCH_EPS_DECAY_STEPS:-15000}"
+    EPS_RESET_VALUE="${EPS_RESET_VALUE:-0.9}"
+    EPS_DECAY_STEPS_AFTER_SWITCH="${EPS_DECAY_STEPS_AFTER_SWITCH:-30000}"
+    POST_SWITCH_STEPS="${POST_SWITCH_STEPS:-7500}"
+    ARCHIVE_FRAC="${ARCHIVE_FRAC:-0.10}"
+    HIDDEN_SIZES_CSV="${HIDDEN_SIZES_CSV:-128,128}"
+    BUFFER_CAPACITY="${BUFFER_CAPACITY:-20000}"
+    RECENT_BUFFER_CAPACITY="${RECENT_BUFFER_CAPACITY:-12000}"
+    ARCHIVE_BUFFER_CAPACITY="${ARCHIVE_BUFFER_CAPACITY:-8000}"
+    SCRATCH_BUFFER_CAPACITY="${SCRATCH_BUFFER_CAPACITY:-20000}"
+    SCRATCH_REF_MIN_VALID_FRACTION="${SCRATCH_REF_MIN_VALID_FRACTION:-0.7}"
+    ;;
+  thesis_distill_test)
+    # Quick test: oracle_segmented vs oracle_segmented_distill, (128,128).
+    # 3 seeds, 300 eps/task, AB + AC + ABA + ABC.
+    MODE="continual"
+    AUTO_BUILD_SCRATCH_REFS=1
+    REUSE_SCRATCH_REFS_BY_TASK_SET="${REUSE_SCRATCH_REFS_BY_TASK_SET:-1}"
+    METHOD_SET="${METHOD_SET:-thesis_distill}"
+    BENCHMARKS_CSV="${BENCHMARKS_CSV:-gw9_goal_balanced_ab_v1,gw9_goal_balanced_ac_v1,gw9_goal_balanced_aba_v1,gw9_goal_balanced_abc_v1}"
+    SESSION_GROUP="${SESSION_GROUP:-thesis_distill_test}"
+    SEEDS_CSV="${SEEDS_CSV:-42,43,44,45,46}"
+    EPISODES_PER_TASK="${EPISODES_PER_TASK:-300}"
+    MAX_STEPS_PER_EPISODE="${MAX_STEPS_PER_EPISODE:-250}"
+    SCRATCH_EPISODES_PER_TASK="${SCRATCH_EPISODES_PER_TASK:-500}"
+    SCRATCH_MAX_STEPS_PER_EPISODE="${SCRATCH_MAX_STEPS_PER_EPISODE:-250}"
+    EVAL_EPISODES="${EVAL_EPISODES:-15}"
+    EVAL_EVERY_EPISODES="${EVAL_EVERY_EPISODES:-25}"
+    WARMUP_STEPS="${WARMUP_STEPS:-750}"
+    SCRATCH_WARMUP_STEPS="${SCRATCH_WARMUP_STEPS:-750}"
+    BATCH_SIZE="${BATCH_SIZE:-64}"
+    EPS_DECAY_STEPS="${EPS_DECAY_STEPS:-15000}"
+    SCRATCH_EPS_DECAY_STEPS="${SCRATCH_EPS_DECAY_STEPS:-15000}"
+    EPS_RESET_VALUE="${EPS_RESET_VALUE:-0.9}"
+    EPS_DECAY_STEPS_AFTER_SWITCH="${EPS_DECAY_STEPS_AFTER_SWITCH:-30000}"
+    POST_SWITCH_STEPS="${POST_SWITCH_STEPS:-7500}"
+    ARCHIVE_FRAC="${ARCHIVE_FRAC:-0.10}"
+    HIDDEN_SIZES_CSV="${HIDDEN_SIZES_CSV:-128,128}"
+    DISTILL_LAMBDA="${DISTILL_LAMBDA:-0.005}"
+    BUFFER_CAPACITY="${BUFFER_CAPACITY:-20000}"
+    RECENT_BUFFER_CAPACITY="${RECENT_BUFFER_CAPACITY:-12000}"
+    ARCHIVE_BUFFER_CAPACITY="${ARCHIVE_BUFFER_CAPACITY:-8000}"
+    SCRATCH_BUFFER_CAPACITY="${SCRATCH_BUFFER_CAPACITY:-20000}"
+    SCRATCH_REF_MIN_VALID_FRACTION="${SCRATCH_REF_MIN_VALID_FRACTION:-0.7}"
+    ;;
+  thesis_distill_test_256)
+    # Same as thesis_distill_test but with (256,256) network.
+    MODE="continual"
+    AUTO_BUILD_SCRATCH_REFS=1
+    REUSE_SCRATCH_REFS_BY_TASK_SET="${REUSE_SCRATCH_REFS_BY_TASK_SET:-1}"
+    METHOD_SET="${METHOD_SET:-thesis_distill}"
+    BENCHMARKS_CSV="${BENCHMARKS_CSV:-gw9_goal_balanced_ab_v1,gw9_goal_balanced_ac_v1,gw9_goal_balanced_aba_v1,gw9_goal_balanced_abc_v1}"
+    SESSION_GROUP="${SESSION_GROUP:-thesis_distill_test_256}"
+    SEEDS_CSV="${SEEDS_CSV:-42,43,44,45,46}"
+    EPISODES_PER_TASK="${EPISODES_PER_TASK:-300}"
+    MAX_STEPS_PER_EPISODE="${MAX_STEPS_PER_EPISODE:-250}"
+    SCRATCH_EPISODES_PER_TASK="${SCRATCH_EPISODES_PER_TASK:-500}"
+    SCRATCH_MAX_STEPS_PER_EPISODE="${SCRATCH_MAX_STEPS_PER_EPISODE:-250}"
+    EVAL_EPISODES="${EVAL_EPISODES:-15}"
+    EVAL_EVERY_EPISODES="${EVAL_EVERY_EPISODES:-25}"
+    WARMUP_STEPS="${WARMUP_STEPS:-750}"
+    SCRATCH_WARMUP_STEPS="${SCRATCH_WARMUP_STEPS:-750}"
+    BATCH_SIZE="${BATCH_SIZE:-64}"
+    EPS_DECAY_STEPS="${EPS_DECAY_STEPS:-15000}"
+    SCRATCH_EPS_DECAY_STEPS="${SCRATCH_EPS_DECAY_STEPS:-15000}"
+    EPS_RESET_VALUE="${EPS_RESET_VALUE:-0.9}"
+    EPS_DECAY_STEPS_AFTER_SWITCH="${EPS_DECAY_STEPS_AFTER_SWITCH:-30000}"
+    POST_SWITCH_STEPS="${POST_SWITCH_STEPS:-7500}"
+    ARCHIVE_FRAC="${ARCHIVE_FRAC:-0.10}"
+    HIDDEN_SIZES_CSV="${HIDDEN_SIZES_CSV:-256,256}"
+    DISTILL_LAMBDA="${DISTILL_LAMBDA:-0.005}"
+    BUFFER_CAPACITY="${BUFFER_CAPACITY:-20000}"
+    RECENT_BUFFER_CAPACITY="${RECENT_BUFFER_CAPACITY:-12000}"
+    ARCHIVE_BUFFER_CAPACITY="${ARCHIVE_BUFFER_CAPACITY:-8000}"
+    SCRATCH_BUFFER_CAPACITY="${SCRATCH_BUFFER_CAPACITY:-20000}"
+    SCRATCH_REF_MIN_VALID_FRACTION="${SCRATCH_REF_MIN_VALID_FRACTION:-0.7}"
+    ;;
   *)
     MODE="continual"
     EPISODES_PER_TASK="${EPISODES_PER_TASK:-150}"
@@ -230,6 +396,12 @@ benchmark_defaults() {
       ;;
     gw_hidden_goal_balanced_ab_v1|gw_hidden_goal_balanced_aba_v1|gw_hidden_goal_balanced_abab_v1|gw_hidden_goal_balanced_ababa_v1)
       printf '%s\n%s\n' "agent_only" "gw_goal_bal_a,gw_goal_bal_b"
+      ;;
+    gw9_goal_balanced_ab_v1|gw9_goal_balanced_ba_v1|gw9_goal_balanced_ac_v1|gw9_goal_balanced_ca_v1|gw9_goal_balanced_aba_v1)
+      printf '%s\n%s\n' "agent_target" "gw9_goal_bal_a,gw9_goal_bal_b,gw9_goal_bal_c"
+      ;;
+    gw9_goal_balanced_abc_v1|gw9_goal_balanced_abca_v1)
+      printf '%s\n%s\n' "agent_target" "gw9_goal_bal_a,gw9_goal_bal_b,gw9_goal_bal_c"
       ;;
     gw9_context_balanced_ab_v1|gw9_context_balanced_ba_v1|gw9_context_balanced_aba_v1|gw9_context_balanced_bab_v1|gw9_context_balanced_abab_v1|gw9_context_balanced_baba_v1|gw9_context_balanced_ababa_v1|gw9_context_balanced_babab_v1)
       printf '%s\n%s\n' "agent_context" "gw9_goal_bal_a,gw9_goal_bal_b"
@@ -314,6 +486,12 @@ SCRATCH_EVAL_DENSE_WINDOW_EPISODES="${SCRATCH_EVAL_DENSE_WINDOW_EPISODES:-$EVAL_
 SCRATCH_WARMUP_STEPS="${SCRATCH_WARMUP_STEPS:-$WARMUP_STEPS}"
 SCRATCH_BATCH_SIZE="${SCRATCH_BATCH_SIZE:-$BATCH_SIZE}"
 SCRATCH_EPS_DECAY_STEPS="${SCRATCH_EPS_DECAY_STEPS:-$EPS_DECAY_STEPS}"
+HIDDEN_SIZES_CSV="${HIDDEN_SIZES_CSV:-128,128}"
+BUFFER_CAPACITY="${BUFFER_CAPACITY:-10000}"
+RECENT_BUFFER_CAPACITY="${RECENT_BUFFER_CAPACITY:-6000}"
+ARCHIVE_BUFFER_CAPACITY="${ARCHIVE_BUFFER_CAPACITY:-4000}"
+SCRATCH_HIDDEN_SIZES_CSV="${SCRATCH_HIDDEN_SIZES_CSV:-$HIDDEN_SIZES_CSV}"
+SCRATCH_BUFFER_CAPACITY="${SCRATCH_BUFFER_CAPACITY:-$BUFFER_CAPACITY}"
 SEGMENTED_KEEP_TAIL="${SEGMENTED_KEEP_TAIL:-512}"
 SEGMENTED_RECENT_ONLY_STEPS="${SEGMENTED_RECENT_ONLY_STEPS:-1000}"
 SEGMENTED_MIN_RECENT_SAMPLES="${SEGMENTED_MIN_RECENT_SAMPLES:-256}"
@@ -328,6 +506,7 @@ EPS_RESET_VALUE="${EPS_RESET_VALUE:-0.4}"
 EPS_DECAY_STEPS_AFTER_SWITCH="${EPS_DECAY_STEPS_AFTER_SWITCH:-2000}"
 ALPHA_MAX_MULT="${ALPHA_MAX_MULT:-3.0}"
 TD_K="${TD_K:-1.0}"
+DISTILL_LAMBDA="${DISTILL_LAMBDA:-0.0}"
 SCRATCH_REF_MIN_FINAL_SUCCESS="${SCRATCH_REF_MIN_FINAL_SUCCESS:-0.8}"
 SCRATCH_REF_MIN_VALID_RUNS="${SCRATCH_REF_MIN_VALID_RUNS:-3}"
 SCRATCH_REF_MIN_VALID_FRACTION="${SCRATCH_REF_MIN_VALID_FRACTION:-0.6}"
@@ -370,10 +549,16 @@ if [[ -z "$METHODS_CSV" ]]; then
         METHODS_CSV="ddqn_vanilla,oracle_reset,detector_reset_only,oracle_segmented,oracle_segmented_td,morphin_lite,morphin_full,morphin_segmented"
         ;;
       thesis_core)
-        METHODS_CSV="ddqn_vanilla,oracle_reset,oracle_segmented,morphin_detect"
+        METHODS_CSV="ddqn_vanilla,oracle_reset,oracle_segmented"
         ;;
       thesis_ablation)
-        METHODS_CSV="ddqn_vanilla,oracle_reset,oracle_segmented,oracle_segmented_td,morphin_detect,morphin_detect_seg"
+        METHODS_CSV="ddqn_vanilla,oracle_reset,oracle_segmented,oracle_segmented_td,morphin_lite"
+        ;;
+      thesis_distill)
+        METHODS_CSV="oracle_segmented,oracle_segmented_distill"
+        ;;
+      thesis_detector)
+        METHODS_CSV="ddqn_vanilla,oracle_segmented,morphin_detect,morphin_detect_seg"
         ;;
       *)
         echo "Unknown METHOD_SET: $METHOD_SET" >&2
@@ -464,7 +649,12 @@ build_common_args() {
     --segmented-min-recent-samples "$SEGMENTED_MIN_RECENT_SAMPLES" \
     --segmented-revisit-recent-mix-start "$SEGMENTED_REVISIT_RECENT_MIX_START" \
     --segmented-revisit-recent-mix-end "$SEGMENTED_REVISIT_RECENT_MIX_END" \
-    --segmented-revisit-recent-only-steps "$SEGMENTED_REVISIT_RECENT_ONLY_STEPS"
+    --segmented-revisit-recent-only-steps "$SEGMENTED_REVISIT_RECENT_ONLY_STEPS" \
+    --hidden-sizes-csv "$HIDDEN_SIZES_CSV" \
+    --buffer-capacity "$BUFFER_CAPACITY" \
+    --recent-buffer-capacity "$RECENT_BUFFER_CAPACITY" \
+    --archive-buffer-capacity "$ARCHIVE_BUFFER_CAPACITY" \
+    --distill-lambda "$DISTILL_LAMBDA"
 }
 
 build_scratch_args() {
@@ -501,7 +691,9 @@ build_scratch_args() {
     --segmented-min-recent-samples "$SEGMENTED_MIN_RECENT_SAMPLES" \
     --segmented-revisit-recent-mix-start "$SEGMENTED_REVISIT_RECENT_MIX_START" \
     --segmented-revisit-recent-mix-end "$SEGMENTED_REVISIT_RECENT_MIX_END" \
-    --segmented-revisit-recent-only-steps "$SEGMENTED_REVISIT_RECENT_ONLY_STEPS"
+    --segmented-revisit-recent-only-steps "$SEGMENTED_REVISIT_RECENT_ONLY_STEPS" \
+    --hidden-sizes-csv "$SCRATCH_HIDDEN_SIZES_CSV" \
+    --buffer-capacity "$SCRATCH_BUFFER_CAPACITY"
 }
 
 run_scratch_stage_for_benchmark() {

@@ -41,6 +41,7 @@ METHOD_CHOICES = (
     "oracle_segmented_td_plus",
     "oracle_segmented_revisit_aware",
     "oracle_segmented_td_revisit_aware",
+    "oracle_segmented_distill",
     "morphin_full",
     "morphin_segmented",
     "morphin_detect",
@@ -117,6 +118,7 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--segmented-revisit-recent-mix-start", type=float, default=0.5)
     parser.add_argument("--segmented-revisit-recent-mix-end", type=float, default=0.5)
     parser.add_argument("--segmented-revisit-recent-only-steps", type=int, default=0)
+    parser.add_argument("--distill-lambda", type=float, default=0.0)
 
     parser.add_argument("--eval-every-episodes", type=int, default=25)
     parser.add_argument("--eval-dense-every-episodes", type=int, default=5)
@@ -148,6 +150,10 @@ def default_adaptation_config(args: argparse.Namespace) -> AdaptationConfig:
     revisit_recent_mix_start: float | None = None
     revisit_recent_mix_end: float | None = None
     revisit_recent_only_steps: int | None = None
+    # distill_lambda is only active for oracle_segmented_distill; all other methods
+    # must stay at 0.0 regardless of what --distill-lambda is passed, so that the
+    # baseline oracle_segmented never accidentally picks up distillation.
+    distill_lambda = args.distill_lambda if args.method == "oracle_segmented_distill" else 0.0
     eps_reset_value = args.eps_reset_value
     eps_decay_steps_after_switch = args.eps_decay_steps_after_switch
     archive_frac = args.archive_frac
@@ -217,6 +223,10 @@ def default_adaptation_config(args: argparse.Namespace) -> AdaptationConfig:
         revisit_recent_mix_start = args.segmented_revisit_recent_mix_start
         revisit_recent_mix_end = args.segmented_revisit_recent_mix_end
         revisit_recent_only_steps = args.segmented_revisit_recent_only_steps
+    elif args.method == "oracle_segmented_distill":
+        replay_policy = "segmented"
+        epsilon_reset_on_switch = True
+        td_adaptive = False
     elif args.method == "morphin_full":
         replay_policy = "keep_all"
         epsilon_reset_on_switch = True
@@ -267,6 +277,7 @@ def default_adaptation_config(args: argparse.Namespace) -> AdaptationConfig:
         base_updates_per_train_step=base_updates_per_train_step,
         post_switch_update_repeats=post_switch_update_repeats,
         post_switch_extra_update_steps=post_switch_extra_update_steps,
+        distill_lambda=distill_lambda,
     )
 
 
@@ -682,7 +693,11 @@ def main() -> int:
             switch_episodes.append(episode_idx)
             switch_type = "revisit_task" if str(task.task_id) in seen_task_ids else "new_task"
             if controller.uses_oracle_boundaries:
-                controller.on_task_switch(replay_buffer, switch_type=switch_type)
+                controller.on_task_switch(
+                    replay_buffer,
+                    switch_type=switch_type,
+                    online_net=agent.online_net,
+                )
                 switch_event = "oracle"
                 detector_rows.append(
                     {
@@ -757,7 +772,12 @@ def main() -> int:
                         device=device,
                         **sample_kwargs,
                     )
-                    stats = agent.update(batch=batch, weight_fn=controller.td_loss_weights)
+                    stats = agent.update(
+                        batch=batch,
+                        weight_fn=controller.td_loss_weights,
+                        frozen_net=controller.frozen_net,
+                        distill_lambda=adaptation.distill_lambda,
+                    )
                     train_updates += 1
                     td_abs_mean_values.append(stats["td_abs_mean"])
                     td_abs_max_values.append(stats["td_abs_max"])
@@ -787,6 +807,7 @@ def main() -> int:
                             "ph_signal_raw": controller.last_signal_raw,
                             "ph_signal_ema": controller.last_signal_ema,
                             "ph_stat": controller.last_ph_stat,
+                            "distill_loss": stats.get("distill_loss", 0.0),
                         }
                     )
 

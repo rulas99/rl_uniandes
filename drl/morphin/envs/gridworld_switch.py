@@ -202,6 +202,14 @@ TASK_LIBRARY: dict[str, GridWorldTaskSpec] = {
         obstacles=NINE_BY_NINE_BALANCED_OBSTACLES,
         max_episode_steps=250,
     ),
+    "gw9_goal_bal_c": GridWorldTaskSpec(
+        task_id="gw9_goal_bal_c",
+        size=9,
+        agent_start=(4, 8),
+        goal=(4, 0),  # centre bottom — equidistant from both wall gaps at x=1 and x=7
+        obstacles=NINE_BY_NINE_BALANCED_OBSTACLES,
+        max_episode_steps=250,
+    ),
     "gw9_goal_cal_a": GridWorldTaskSpec(
         task_id="gw9_goal_cal_a",
         size=9,
@@ -293,6 +301,15 @@ BENCHMARK_LIBRARY: dict[str, list[str]] = {
     "gw_hidden_goal_balanced_aba_v1": ["gw_goal_bal_a", "gw_goal_bal_b", "gw_goal_bal_a"],
     "gw_hidden_goal_balanced_abab_v1": ["gw_goal_bal_a", "gw_goal_bal_b", "gw_goal_bal_a", "gw_goal_bal_b"],
     "gw_hidden_goal_balanced_ababa_v1": ["gw_goal_bal_a", "gw_goal_bal_b", "gw_goal_bal_a", "gw_goal_bal_b", "gw_goal_bal_a"],
+    # 9x9 goal-conditioned benchmarks (agent_target obs mode — 4D, matches 5x5 thesis setup)
+    "gw9_goal_balanced_ab_v1":   ["gw9_goal_bal_a", "gw9_goal_bal_b"],
+    "gw9_goal_balanced_ba_v1":   ["gw9_goal_bal_b", "gw9_goal_bal_a"],
+    "gw9_goal_balanced_ac_v1":   ["gw9_goal_bal_a", "gw9_goal_bal_c"],
+    "gw9_goal_balanced_ca_v1":   ["gw9_goal_bal_c", "gw9_goal_bal_a"],
+    "gw9_goal_balanced_aba_v1":  ["gw9_goal_bal_a", "gw9_goal_bal_b", "gw9_goal_bal_a"],
+    "gw9_goal_balanced_abc_v1":  ["gw9_goal_bal_a", "gw9_goal_bal_b", "gw9_goal_bal_c"],
+    "gw9_goal_balanced_abca_v1": ["gw9_goal_bal_a", "gw9_goal_bal_b", "gw9_goal_bal_c", "gw9_goal_bal_a"],
+    # Legacy context-signal benchmarks (agent_context obs mode)
     "gw9_context_balanced_ab_v1": ["gw9_goal_bal_a", "gw9_goal_bal_b"],
     "gw9_context_balanced_ba_v1": ["gw9_goal_bal_b", "gw9_goal_bal_a"],
     "gw9_context_balanced_aba_v1": ["gw9_goal_bal_a", "gw9_goal_bal_b", "gw9_goal_bal_a"],
@@ -350,6 +367,15 @@ BENCHMARK_DEFAULT_OBS_MODE: dict[str, str] = {
     "gw_hidden_goal_balanced_aba_v1": "agent_only",
     "gw_hidden_goal_balanced_abab_v1": "agent_only",
     "gw_hidden_goal_balanced_ababa_v1": "agent_only",
+    # 9x9 goal-conditioned (agent_target)
+    "gw9_goal_balanced_ab_v1":   "agent_target",
+    "gw9_goal_balanced_ba_v1":   "agent_target",
+    "gw9_goal_balanced_ac_v1":   "agent_target",
+    "gw9_goal_balanced_ca_v1":   "agent_target",
+    "gw9_goal_balanced_aba_v1":  "agent_target",
+    "gw9_goal_balanced_abc_v1":  "agent_target",
+    "gw9_goal_balanced_abca_v1": "agent_target",
+    # Legacy context-signal benchmarks
     "gw9_context_balanced_ab_v1": "agent_context",
     "gw9_context_balanced_ba_v1": "agent_context",
     "gw9_context_balanced_aba_v1": "agent_context",

@@ -181,13 +181,25 @@ class SegmentedReplayBuffer:
         archive_target = min(len(archive_list), batch_size - recent_target)
 
         transitions: list[Transition] = []
+        source_flags: list[float] = []
         if recent_target > 0:
-            transitions.extend(random.sample(recent_list, k=recent_target))
+            sampled_recent = random.sample(recent_list, k=recent_target)
+            transitions.extend(sampled_recent)
+            source_flags.extend([0.0] * len(sampled_recent))
         if archive_target > 0:
-            transitions.extend(random.sample(archive_list, k=archive_target))
+            sampled_archive = random.sample(archive_list, k=archive_target)
+            transitions.extend(sampled_archive)
+            source_flags.extend([1.0] * len(sampled_archive))
 
+        archive_set = set(id(t) for t in archive_list)
         pool: list[Transition] = recent_list + archive_list
         while len(transitions) < batch_size:
-            transitions.append(random.choice(pool))
+            t = random.choice(pool)
+            transitions.append(t)
+            source_flags.append(1.0 if id(t) in archive_set else 0.0)
 
-        return _stack_states(transitions[:batch_size], device=device)
+        batch = _stack_states(transitions[:batch_size], device=device)
+        batch["archive_mask"] = torch.tensor(
+            source_flags[:batch_size], dtype=torch.float32, device=device,
+        )
+        return batch

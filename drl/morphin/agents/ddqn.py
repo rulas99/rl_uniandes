@@ -76,6 +76,8 @@ class DDQNAgent:
         self,
         batch: dict[str, torch.Tensor],
         weight_fn: Callable[[torch.Tensor], torch.Tensor] | None = None,
+        frozen_net: torch.nn.Module | None = None,
+        distill_lambda: float = 0.0,
     ) -> dict[str, float]:
         states = batch["states"]
         actions = batch["actions"]
@@ -83,8 +85,10 @@ class DDQNAgent:
         dones = batch["dones"]
         non_final_mask = batch["non_final_mask"]
         next_states = batch["next_states"]
+        archive_mask = batch.get("archive_mask")
 
-        q_sa = self.online_net(states).gather(1, actions)
+        q_all = self.online_net(states)
+        q_sa = q_all.gather(1, actions)
         target_q = torch.zeros((states.shape[0], 1), dtype=torch.float32, device=self.device)
 
         if bool(non_final_mask.any()):
@@ -97,11 +101,37 @@ class DDQNAgent:
         td_errors = targets - q_sa
         td_abs = td_errors.detach().abs()
         base_loss = F.smooth_l1_loss(q_sa, targets, reduction="none")
-        if weight_fn is None:
-            weights = torch.ones_like(base_loss)
+
+        use_distill = (
+            frozen_net is not None
+            and distill_lambda > 0
+            and archive_mask is not None
+            and archive_mask.sum() > 0
+        )
+
+        if use_distill:
+            recent_mask = (1.0 - archive_mask).unsqueeze(1)
+            archive_mask_f = archive_mask.unsqueeze(1)
+
+            if weight_fn is not None:
+                weights = weight_fn(td_abs)
+                td_loss = (weights * base_loss * recent_mask).sum() / recent_mask.sum().clamp(min=1)
+            else:
+                td_loss = (base_loss * recent_mask).sum() / recent_mask.sum().clamp(min=1)
+
+            with torch.no_grad():
+                frozen_q = frozen_net(states)
+            distill_errors = F.mse_loss(q_all, frozen_q, reduction="none").mean(dim=1, keepdim=True)
+            distill_loss = (distill_errors * archive_mask_f).sum() / archive_mask_f.sum().clamp(min=1)
+
+            loss = td_loss + distill_lambda * distill_loss
         else:
-            weights = weight_fn(td_abs)
-        loss = (weights * base_loss).mean()
+            if weight_fn is not None:
+                weights = weight_fn(td_abs)
+                loss = (weights * base_loss).mean()
+            else:
+                loss = base_loss.mean()
+            distill_loss = torch.zeros(1, device=self.device)
 
         self.optimizer.zero_grad()
         loss.backward()
@@ -118,6 +148,7 @@ class DDQNAgent:
             "td_abs_max": float(td_abs.max().item()),
             "q_sa_mean": float(q_sa.detach().mean().item()),
             "target_q_mean": float(targets.detach().mean().item()),
+            "distill_loss": float(distill_loss.item()),
         }
 
     def soft_update(self) -> None:

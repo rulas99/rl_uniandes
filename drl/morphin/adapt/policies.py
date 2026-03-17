@@ -1,9 +1,11 @@
 from __future__ import annotations
 
+import copy
 from dataclasses import dataclass
 from typing import Any
 
 import torch
+import torch.nn as nn
 
 from .detector import PageHinkleyDetector
 
@@ -40,6 +42,7 @@ class AdaptationConfig:
     base_updates_per_train_step: int = 1
     post_switch_update_repeats: int = 1
     post_switch_extra_update_steps: int = 0
+    distill_lambda: float = 0.0
 
 
 class EpsilonScheduler:
@@ -97,6 +100,7 @@ class AdaptationController:
         self.last_signal_ema = 0.0
         self.last_ph_stat = 0.0
         self.current_switch_type = "initial"
+        self.frozen_net: nn.Module | None = None
 
     @property
     def uses_oracle_boundaries(self) -> bool:
@@ -108,6 +112,7 @@ class AdaptationController:
             "oracle_segmented_td_plus",
             "oracle_segmented_revisit_aware",
             "oracle_segmented_td_revisit_aware",
+            "oracle_segmented_distill",
         }
 
     @property
@@ -127,7 +132,12 @@ class AdaptationController:
         self.epsilon_scheduler.step()
         self.steps_since_switch += 1
 
-    def on_task_switch(self, replay_buffer: Any, switch_type: str | None = None) -> dict[str, Any]:
+    def on_task_switch(
+        self,
+        replay_buffer: Any,
+        switch_type: str | None = None,
+        online_net: nn.Module | None = None,
+    ) -> dict[str, Any]:
         if self.config.epsilon_reset_on_switch:
             self.epsilon_scheduler.reset(
                 value=self.config.eps_reset_value,
@@ -136,6 +146,11 @@ class AdaptationController:
         self.steps_since_switch = 0
         self.current_switch_type = switch_type or "unknown"
         self._apply_replay_switch(replay_buffer)
+        if self.config.distill_lambda > 0 and online_net is not None:
+            self.frozen_net = copy.deepcopy(online_net)
+            self.frozen_net.eval()
+            for p in self.frozen_net.parameters():
+                p.requires_grad_(False)
         return {"switch_trigger": "oracle", "switch_type": self.current_switch_type}
 
     def on_episode_end(
