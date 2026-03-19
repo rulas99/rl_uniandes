@@ -240,7 +240,7 @@ case "$RUN_PROFILE" in
     EPS_DECAY_STEPS_AFTER_SWITCH="${EPS_DECAY_STEPS_AFTER_SWITCH:-30000}"
     POST_SWITCH_STEPS="${POST_SWITCH_STEPS:-7500}"
     # Reduced archive to limit task-A interference on new-task discovery.
-    ARCHIVE_FRAC="${ARCHIVE_FRAC:-0.10}"
+    ARCHIVE_FRAC="${ARCHIVE_FRAC:-0.30}"
     HIDDEN_SIZES_CSV="${HIDDEN_SIZES_CSV:-128,128}"
     BUFFER_CAPACITY="${BUFFER_CAPACITY:-20000}"
     RECENT_BUFFER_CAPACITY="${RECENT_BUFFER_CAPACITY:-12000}"
@@ -272,7 +272,7 @@ case "$RUN_PROFILE" in
     EPS_RESET_VALUE="${EPS_RESET_VALUE:-0.9}"
     EPS_DECAY_STEPS_AFTER_SWITCH="${EPS_DECAY_STEPS_AFTER_SWITCH:-30000}"
     POST_SWITCH_STEPS="${POST_SWITCH_STEPS:-7500}"
-    ARCHIVE_FRAC="${ARCHIVE_FRAC:-0.10}"
+    ARCHIVE_FRAC="${ARCHIVE_FRAC:-0.30}"
     HIDDEN_SIZES_CSV="${HIDDEN_SIZES_CSV:-128,128}"
     BUFFER_CAPACITY="${BUFFER_CAPACITY:-20000}"
     RECENT_BUFFER_CAPACITY="${RECENT_BUFFER_CAPACITY:-12000}"
@@ -376,6 +376,138 @@ case "$RUN_PROFILE" in
     ARCHIVE_BUFFER_CAPACITY="${ARCHIVE_BUFFER_CAPACITY:-8000}"
     SCRATCH_BUFFER_CAPACITY="${SCRATCH_BUFFER_CAPACITY:-20000}"
     SCRATCH_REF_MIN_VALID_FRACTION="${SCRATCH_REF_MIN_VALID_FRACTION:-0.7}"
+    ;;
+  thesis_lambda_sweep)
+    # Lambda sweep for oracle_segmented_distill on (256,256), AB+AC only, 3 seeds.
+    # Tests lambda in {0.001, 0.005, 0.020, 0.050, 0.200} vs no-distill baseline.
+    MODE="continual"
+    AUTO_BUILD_SCRATCH_REFS=1
+    REUSE_SCRATCH_REFS_BY_TASK_SET="${REUSE_SCRATCH_REFS_BY_TASK_SET:-1}"
+    METHOD_SET="${METHOD_SET:-thesis_lambda_sweep}"
+    BENCHMARKS_CSV="${BENCHMARKS_CSV:-gw9_goal_balanced_ab_v1,gw9_goal_balanced_ac_v1}"
+    SESSION_GROUP="${SESSION_GROUP:-thesis_lambda_sweep}"
+    SEEDS_CSV="${SEEDS_CSV:-42,43,44}"
+    EPISODES_PER_TASK="${EPISODES_PER_TASK:-300}"
+    MAX_STEPS_PER_EPISODE="${MAX_STEPS_PER_EPISODE:-250}"
+    SCRATCH_EPISODES_PER_TASK="${SCRATCH_EPISODES_PER_TASK:-500}"
+    SCRATCH_MAX_STEPS_PER_EPISODE="${SCRATCH_MAX_STEPS_PER_EPISODE:-250}"
+    EVAL_EPISODES="${EVAL_EPISODES:-15}"
+    EVAL_EVERY_EPISODES="${EVAL_EVERY_EPISODES:-25}"
+    WARMUP_STEPS="${WARMUP_STEPS:-750}"
+    SCRATCH_WARMUP_STEPS="${SCRATCH_WARMUP_STEPS:-750}"
+    BATCH_SIZE="${BATCH_SIZE:-64}"
+    EPS_DECAY_STEPS="${EPS_DECAY_STEPS:-15000}"
+    SCRATCH_EPS_DECAY_STEPS="${SCRATCH_EPS_DECAY_STEPS:-15000}"
+    EPS_RESET_VALUE="${EPS_RESET_VALUE:-0.9}"
+    EPS_DECAY_STEPS_AFTER_SWITCH="${EPS_DECAY_STEPS_AFTER_SWITCH:-30000}"
+    POST_SWITCH_STEPS="${POST_SWITCH_STEPS:-7500}"
+    ARCHIVE_FRAC="${ARCHIVE_FRAC:-0.10}"
+    HIDDEN_SIZES_CSV="${HIDDEN_SIZES_CSV:-256,256}"
+    BUFFER_CAPACITY="${BUFFER_CAPACITY:-20000}"
+    RECENT_BUFFER_CAPACITY="${RECENT_BUFFER_CAPACITY:-12000}"
+    ARCHIVE_BUFFER_CAPACITY="${ARCHIVE_BUFFER_CAPACITY:-8000}"
+    SCRATCH_BUFFER_CAPACITY="${SCRATCH_BUFFER_CAPACITY:-20000}"
+    SCRATCH_REF_MIN_VALID_FRACTION="${SCRATCH_REF_MIN_VALID_FRACTION:-0.7}"
+    ;;
+  thesis_9x9_full_256)
+    # Definitive 4-method comparison on (256,256): ddqn_vanilla, oracle_reset,
+    # oracle_segmented, oracle_segmented_distill_l001 (λ=0.001, Option B fix:
+    # TD on all samples + distill anchor on archive).
+    # 5 seeds default (override via SEEDS_CSV for overnight runs).
+    MODE="continual"
+    AUTO_BUILD_SCRATCH_REFS=1
+    REUSE_SCRATCH_REFS_BY_TASK_SET="${REUSE_SCRATCH_REFS_BY_TASK_SET:-1}"
+    METHOD_SET="${METHOD_SET:-thesis_full_256}"
+    BENCHMARKS_CSV="${BENCHMARKS_CSV:-gw9_goal_balanced_ab_v1,gw9_goal_balanced_ac_v1,gw9_goal_balanced_aba_v1,gw9_goal_balanced_abc_v1}"
+    SESSION_GROUP="${SESSION_GROUP:-thesis_9x9_full_256}"
+    SEEDS_CSV="${SEEDS_CSV:-42,43,44,45,46}"
+    EPISODES_PER_TASK="${EPISODES_PER_TASK:-400}"
+    MAX_STEPS_PER_EPISODE="${MAX_STEPS_PER_EPISODE:-250}"
+    SCRATCH_EPISODES_PER_TASK="${SCRATCH_EPISODES_PER_TASK:-500}"
+    SCRATCH_MAX_STEPS_PER_EPISODE="${SCRATCH_MAX_STEPS_PER_EPISODE:-250}"
+    EVAL_EPISODES="${EVAL_EPISODES:-15}"
+    EVAL_EVERY_EPISODES="${EVAL_EVERY_EPISODES:-25}"
+    WARMUP_STEPS="${WARMUP_STEPS:-750}"
+    SCRATCH_WARMUP_STEPS="${SCRATCH_WARMUP_STEPS:-750}"
+    BATCH_SIZE="${BATCH_SIZE:-64}"
+    EPS_DECAY_STEPS="${EPS_DECAY_STEPS:-15000}"
+    SCRATCH_EPS_DECAY_STEPS="${SCRATCH_EPS_DECAY_STEPS:-15000}"
+    EPS_RESET_VALUE="${EPS_RESET_VALUE:-0.9}"
+    EPS_DECAY_STEPS_AFTER_SWITCH="${EPS_DECAY_STEPS_AFTER_SWITCH:-30000}"
+    POST_SWITCH_STEPS="${POST_SWITCH_STEPS:-7500}"
+    ARCHIVE_FRAC="${ARCHIVE_FRAC:-0.10}"
+    HIDDEN_SIZES_CSV="${HIDDEN_SIZES_CSV:-256,256}"
+    BUFFER_CAPACITY="${BUFFER_CAPACITY:-20000}"
+    RECENT_BUFFER_CAPACITY="${RECENT_BUFFER_CAPACITY:-12000}"
+    ARCHIVE_BUFFER_CAPACITY="${ARCHIVE_BUFFER_CAPACITY:-8000}"
+    SCRATCH_BUFFER_CAPACITY="${SCRATCH_BUFFER_CAPACITY:-20000}"
+    SCRATCH_REF_MIN_VALID_FRACTION="${SCRATCH_REF_MIN_VALID_FRACTION:-0.7}"
+    ;;
+  thesis_archive_sweep)
+    # Archive fraction sweep: oracle_segmented with af=0.10,0.15,0.20,0.25,0.30
+    # Tests whether larger archive improves retention to distill-level without distillation.
+    # 5 methods × 8 seeds × 4 benchmarks = 160 runs (~6-7 hrs)
+    MODE="continual"
+    AUTO_BUILD_SCRATCH_REFS=1
+    REUSE_SCRATCH_REFS_BY_TASK_SET="${REUSE_SCRATCH_REFS_BY_TASK_SET:-1}"
+    METHOD_SET="${METHOD_SET:-thesis_archive_sweep}"
+    BENCHMARKS_CSV="${BENCHMARKS_CSV:-gw9_goal_balanced_ab_v1,gw9_goal_balanced_ac_v1,gw9_goal_balanced_aba_v1,gw9_goal_balanced_abc_v1}"
+    SESSION_GROUP="${SESSION_GROUP:-thesis_archive_sweep}"
+    SEEDS_CSV="${SEEDS_CSV:-42,43,44,45,46,47,48,49}"
+    EPISODES_PER_TASK="${EPISODES_PER_TASK:-400}"
+    MAX_STEPS_PER_EPISODE="${MAX_STEPS_PER_EPISODE:-250}"
+    SCRATCH_EPISODES_PER_TASK="${SCRATCH_EPISODES_PER_TASK:-500}"
+    SCRATCH_MAX_STEPS_PER_EPISODE="${SCRATCH_MAX_STEPS_PER_EPISODE:-250}"
+    EVAL_EPISODES="${EVAL_EPISODES:-15}"
+    EVAL_EVERY_EPISODES="${EVAL_EVERY_EPISODES:-25}"
+    WARMUP_STEPS="${WARMUP_STEPS:-750}"
+    SCRATCH_WARMUP_STEPS="${SCRATCH_WARMUP_STEPS:-750}"
+    BATCH_SIZE="${BATCH_SIZE:-64}"
+    EPS_DECAY_STEPS="${EPS_DECAY_STEPS:-15000}"
+    SCRATCH_EPS_DECAY_STEPS="${SCRATCH_EPS_DECAY_STEPS:-15000}"
+    EPS_RESET_VALUE="${EPS_RESET_VALUE:-0.9}"
+    EPS_DECAY_STEPS_AFTER_SWITCH="${EPS_DECAY_STEPS_AFTER_SWITCH:-30000}"
+    POST_SWITCH_STEPS="${POST_SWITCH_STEPS:-7500}"
+    ARCHIVE_FRAC="${ARCHIVE_FRAC:-0.10}"
+    HIDDEN_SIZES_CSV="${HIDDEN_SIZES_CSV:-256,256}"
+    BUFFER_CAPACITY="${BUFFER_CAPACITY:-20000}"
+    RECENT_BUFFER_CAPACITY="${RECENT_BUFFER_CAPACITY:-12000}"
+    ARCHIVE_BUFFER_CAPACITY="${ARCHIVE_BUFFER_CAPACITY:-8000}"
+    SCRATCH_BUFFER_CAPACITY="${SCRATCH_BUFFER_CAPACITY:-20000}"
+    SCRATCH_REF_MIN_VALID_FRACTION="${SCRATCH_REF_MIN_VALID_FRACTION:-0.7}"
+    ;;
+  thesis_der_validate)
+    # DER++ validation: 4 methods × 4 seeds × 2 benchmarks = 32 runs (~1-2 hrs)
+    # Validates that DER++ implementation is correct before the full overnight run.
+    # NOTE: all vars use direct assignment (no :-) to prevent parent-env contamination.
+    MODE="continual"
+    AUTO_BUILD_SCRATCH_REFS=1
+    REUSE_SCRATCH_REFS_BY_TASK_SET=1
+    METHOD_SET="thesis_der_validate"
+    BENCHMARKS_CSV="gw9_goal_balanced_ab_v1,gw9_goal_balanced_abc_v1"
+    SESSION_GROUP="thesis_der_validate"
+    SEEDS_CSV="42,43,44,45"
+    EPISODES_PER_TASK=400
+    MAX_STEPS_PER_EPISODE=250
+    SCRATCH_EPISODES_PER_TASK=500
+    SCRATCH_MAX_STEPS_PER_EPISODE=250
+    EVAL_EPISODES=15
+    EVAL_EVERY_EPISODES=25
+    WARMUP_STEPS=750
+    SCRATCH_WARMUP_STEPS=750
+    BATCH_SIZE=64
+    EPS_DECAY_STEPS=15000
+    SCRATCH_EPS_DECAY_STEPS=15000
+    EPS_RESET_VALUE=0.9
+    EPS_DECAY_STEPS_AFTER_SWITCH=30000
+    POST_SWITCH_STEPS=7500
+    ARCHIVE_FRAC=0.10
+    HIDDEN_SIZES_CSV=256,256
+    BUFFER_CAPACITY=20000
+    RECENT_BUFFER_CAPACITY=12000
+    ARCHIVE_BUFFER_CAPACITY=8000
+    SCRATCH_BUFFER_CAPACITY=20000
+    SCRATCH_REF_MIN_VALID_FRACTION=0.7
     ;;
   *)
     MODE="continual"
@@ -507,6 +639,10 @@ EPS_DECAY_STEPS_AFTER_SWITCH="${EPS_DECAY_STEPS_AFTER_SWITCH:-2000}"
 ALPHA_MAX_MULT="${ALPHA_MAX_MULT:-3.0}"
 TD_K="${TD_K:-1.0}"
 DISTILL_LAMBDA="${DISTILL_LAMBDA:-0.0}"
+DISTILL_NEW_TASK_ONLY="${DISTILL_NEW_TASK_ONLY:-1}"
+DER_ALPHA="${DER_ALPHA:-0.1}"
+DER_BETA="${DER_BETA:-1.0}"
+DER_CAPACITY="${DER_CAPACITY:-0}"
 SCRATCH_REF_MIN_FINAL_SUCCESS="${SCRATCH_REF_MIN_FINAL_SUCCESS:-0.8}"
 SCRATCH_REF_MIN_VALID_RUNS="${SCRATCH_REF_MIN_VALID_RUNS:-3}"
 SCRATCH_REF_MIN_VALID_FRACTION="${SCRATCH_REF_MIN_VALID_FRACTION:-0.6}"
@@ -557,6 +693,21 @@ if [[ -z "$METHODS_CSV" ]]; then
       thesis_distill)
         METHODS_CSV="oracle_segmented,oracle_segmented_distill"
         ;;
+      thesis_lambda_sweep)
+        METHODS_CSV="oracle_segmented,oracle_segmented_distill_l001,oracle_segmented_distill_l005,oracle_segmented_distill_l020,oracle_segmented_distill_l050,oracle_segmented_distill_l200"
+        ;;
+      thesis_full_256)
+        METHODS_CSV="ddqn_vanilla,oracle_reset,oracle_segmented,oracle_segmented_distill_l001"
+        ;;
+      thesis_archive_sweep)
+        METHODS_CSV="oracle_segmented,oracle_segmented_af015,oracle_segmented_af020,oracle_segmented_af025,oracle_segmented_af030"
+        ;;
+      thesis_der_validate)
+        METHODS_CSV="ddqn_vanilla,oracle_segmented,oracle_segmented_distill_l001,der_plus_plus"
+        ;;
+      thesis_der_validate_oracle)
+        METHODS_CSV="ddqn_vanilla,oracle_segmented,oracle_segmented_distill_l001,oracle_der_plus_plus"
+        ;;
       thesis_detector)
         METHODS_CSV="ddqn_vanilla,oracle_segmented,morphin_detect,morphin_detect_seg"
         ;;
@@ -603,6 +754,8 @@ log "Scratch refs: min_final_success=$SCRATCH_REF_MIN_FINAL_SUCCESS min_valid_ru
 log "Scratch gate: enabled=$SCRATCH_GATE_ENABLED require_stable=$SCRATCH_GATE_REQUIRE_STABLE min_passing_fraction=$SCRATCH_GATE_MIN_PASSING_FRACTION min_final_success=$SCRATCH_GATE_MIN_FINAL_SUCCESS"
 log "Switch epsilon reset: value=$EPS_RESET_VALUE decay_steps=$EPS_DECAY_STEPS_AFTER_SWITCH"
 log "Replay: archive_frac=$ARCHIVE_FRAC recent_mix=$RECENT_MIX_START->$RECENT_MIX_END post_switch_steps=$POST_SWITCH_STEPS keep_tail=$SEGMENTED_KEEP_TAIL"
+log "Distill: lambda=$DISTILL_LAMBDA new_task_only=$DISTILL_NEW_TASK_ONLY"
+log "DER++: alpha=$DER_ALPHA beta=$DER_BETA der_capacity=${DER_CAPACITY:-0}"
 log "Replay revisit-aware: revisit_recent_mix=$SEGMENTED_REVISIT_RECENT_MIX_START->$SEGMENTED_REVISIT_RECENT_MIX_END revisit_recent_only_steps=$SEGMENTED_REVISIT_RECENT_ONLY_STEPS"
 log "TD weighting: alpha_max_mult=$ALPHA_MAX_MULT td_k=$TD_K"
 log "Dense eval: every $EVAL_DENSE_EVERY_EPISODES within $EVAL_DENSE_WINDOW_EPISODES eps after switch | Max steps/ep: $MAX_STEPS_PER_EPISODE"
@@ -654,7 +807,11 @@ build_common_args() {
     --buffer-capacity "$BUFFER_CAPACITY" \
     --recent-buffer-capacity "$RECENT_BUFFER_CAPACITY" \
     --archive-buffer-capacity "$ARCHIVE_BUFFER_CAPACITY" \
-    --distill-lambda "$DISTILL_LAMBDA"
+    --distill-lambda "$DISTILL_LAMBDA" \
+    --distill-new-task-only "$DISTILL_NEW_TASK_ONLY" \
+    --der-alpha "$DER_ALPHA" \
+    --der-beta "$DER_BETA" \
+    --der-capacity "$DER_CAPACITY"
 }
 
 build_scratch_args() {
@@ -925,6 +1082,9 @@ cat >"$SESSION_ROOT/session_config.json" <<JSON
   "alpha_max_mult": $ALPHA_MAX_MULT,
   "td_k": $TD_K,
   "learning_rate": $LEARNING_RATE,
+  "der_alpha": $DER_ALPHA,
+  "der_beta": $DER_BETA,
+  "der_capacity": $DER_CAPACITY,
   "archive_frac": $ARCHIVE_FRAC,
   "recent_mix_start": $RECENT_MIX_START,
   "recent_mix_end": $RECENT_MIX_END,

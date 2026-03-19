@@ -78,6 +78,9 @@ class DDQNAgent:
         weight_fn: Callable[[torch.Tensor], torch.Tensor] | None = None,
         frozen_net: torch.nn.Module | None = None,
         distill_lambda: float = 0.0,
+        der_batch: dict[str, torch.Tensor] | None = None,
+        der_alpha: float = 0.0,
+        der_beta: float = 1.0,
     ) -> dict[str, float]:
         states = batch["states"]
         actions = batch["actions"]
@@ -110,21 +113,26 @@ class DDQNAgent:
         )
 
         if use_distill:
-            recent_mask = (1.0 - archive_mask).unsqueeze(1)
             archive_mask_f = archive_mask.unsqueeze(1)
 
+            # TD on ALL samples (recent + archive) — archive Q-values stay
+            # current via Bellman updates, same as oracle_segmented.
             if weight_fn is not None:
                 weights = weight_fn(td_abs)
-                td_loss = (weights * base_loss * recent_mask).sum() / recent_mask.sum().clamp(min=1)
+                td_loss = (weights * base_loss).mean()
             else:
-                td_loss = (base_loss * recent_mask).sum() / recent_mask.sum().clamp(min=1)
+                td_loss = base_loss.mean()
 
+            # Distill anchor on archive samples only — soft regularizer that
+            # keeps old-task Q-values close to the frozen_net baseline,
+            # preventing drift that TD alone cannot fully counteract.
             with torch.no_grad():
                 frozen_q = frozen_net(states)
             distill_errors = F.mse_loss(q_all, frozen_q, reduction="none").mean(dim=1, keepdim=True)
             distill_loss = (distill_errors * archive_mask_f).sum() / archive_mask_f.sum().clamp(min=1)
 
             loss = td_loss + distill_lambda * distill_loss
+            distill_batches = int(archive_mask.sum().item())
         else:
             if weight_fn is not None:
                 weights = weight_fn(td_abs)
@@ -132,6 +140,43 @@ class DDQNAgent:
             else:
                 loss = base_loss.mean()
             distill_loss = torch.zeros(1, device=self.device)
+            distill_batches = 0
+
+        # ── DER++ auxiliary losses ────────────────────────────────────────────
+        # α-term: MSE(Q_current(s_M), z_stored) — soft Q-value consistency
+        #         across time, without requiring task boundaries.
+        # β-term: TD loss on memory samples — replay memory stays Bellman-consistent.
+        der_alpha_loss_val = 0.0
+        der_beta_loss_val = 0.0
+        if der_batch is not None and (der_alpha > 0 or der_beta > 0):
+            der_states = der_batch["states"]
+            der_q_current = self.online_net(der_states)
+
+            if der_alpha > 0:
+                der_z = der_batch["z_stored"]
+                der_alpha_loss = F.mse_loss(der_q_current, der_z)
+                loss = loss + der_alpha * der_alpha_loss
+                der_alpha_loss_val = float(der_alpha_loss.item())
+
+            if der_beta > 0:
+                der_actions = der_batch["actions"]
+                der_rewards = der_batch["rewards"]
+                der_dones = der_batch["dones"]
+                der_nf = der_batch["non_final_mask"]
+                der_ns = der_batch["next_states"]
+                der_q_sa = der_q_current.gather(1, der_actions)
+                der_tgt = torch.zeros(
+                    (der_states.shape[0], 1), dtype=torch.float32, device=der_states.device
+                )
+                if bool(der_nf.any()):
+                    with torch.no_grad():
+                        der_na = self.online_net(der_ns).argmax(dim=1, keepdim=True)
+                        der_nq = self.target_net(der_ns).gather(1, der_na)
+                    der_tgt[der_nf] = der_nq
+                der_targets = der_rewards + self.config.gamma * (1.0 - der_dones) * der_tgt
+                der_beta_loss = F.smooth_l1_loss(der_q_sa, der_targets.detach())
+                loss = loss + der_beta * der_beta_loss
+                der_beta_loss_val = float(der_beta_loss.item())
 
         self.optimizer.zero_grad()
         loss.backward()
@@ -149,6 +194,10 @@ class DDQNAgent:
             "q_sa_mean": float(q_sa.detach().mean().item()),
             "target_q_mean": float(targets.detach().mean().item()),
             "distill_loss": float(distill_loss.item()),
+            "distill_active": float(bool(use_distill)),
+            "distill_archive_samples": float(distill_batches),
+            "der_alpha_loss": der_alpha_loss_val,
+            "der_beta_loss": der_beta_loss_val,
         }
 
     def soft_update(self) -> None:

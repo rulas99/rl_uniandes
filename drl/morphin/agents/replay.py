@@ -203,3 +203,71 @@ class SegmentedReplayBuffer:
             source_flags[:batch_size], dtype=torch.float32, device=device,
         )
         return batch
+
+
+class DERReplayBuffer:
+    """Reservoir-sampled buffer storing transitions + Q-value snapshots.
+
+    Implements the memory component of DER++ (Buzzega et al., NeurIPS 2020)
+    for DDQN.  Each transition is stored alongside the Q-value vector
+    z_stored = Q_online(s) computed at insertion time.  Reservoir sampling
+    ensures the buffer maintains a uniform distribution over all transitions
+    seen so far, with no task boundary required.
+
+    At update time, a sampled batch contains:
+        "z_stored"  — (B, action_dim) stored Q-values for the α-term loss
+        plus all regular batch keys for the β-term TD loss.
+    """
+
+    def __init__(self, capacity: int) -> None:
+        self.capacity = int(capacity)
+        self._transitions: list[Transition] = []
+        self._z_stored: list[np.ndarray] = []
+        self._total_seen: int = 0
+
+    def __len__(self) -> int:
+        return len(self._transitions)
+
+    def add(
+        self,
+        state: np.ndarray,
+        action: int,
+        reward: float,
+        next_state: np.ndarray | None,
+        done: bool,
+        task_id: str,
+        z_stored: np.ndarray,
+    ) -> None:
+        t = Transition(
+            state=np.asarray(state, dtype=np.float32),
+            action=int(action),
+            reward=float(reward),
+            next_state=None if next_state is None else np.asarray(next_state, dtype=np.float32),
+            done=bool(done),
+            task_id=str(task_id),
+        )
+        z = np.asarray(z_stored, dtype=np.float32)
+        self._total_seen += 1
+        if len(self._transitions) < self.capacity:
+            self._transitions.append(t)
+            self._z_stored.append(z)
+        else:
+            # Reservoir: replace a random position with probability capacity/total_seen
+            idx = random.randint(0, self._total_seen - 1)
+            if idx < self.capacity:
+                self._transitions[idx] = t
+                self._z_stored[idx] = z
+
+    def sample(
+        self, batch_size: int, device: torch.device, **_: object
+    ) -> dict[str, torch.Tensor] | None:
+        """Returns None if the buffer holds fewer samples than batch_size."""
+        n = len(self._transitions)
+        if n < int(batch_size):
+            return None
+        indices = random.sample(range(n), k=int(batch_size))
+        transitions = [self._transitions[i] for i in indices]
+        z_arr = np.stack([self._z_stored[i] for i in indices])
+        batch = _stack_states(transitions, device)
+        batch["z_stored"] = torch.as_tensor(z_arr, dtype=torch.float32, device=device)
+        return batch

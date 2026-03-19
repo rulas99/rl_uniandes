@@ -13,6 +13,7 @@ import numpy as np
 import torch
 
 from .agents import DDQNAgent, DDQNConfig, SegmentedReplayBuffer, UniformReplayBuffer
+from .agents.replay import DERReplayBuffer
 from .adapt import AdaptationConfig, AdaptationController
 from .analysis_metrics import compute_detection_metrics
 from .analysis_metrics import compute_eval_switch_metrics
@@ -42,6 +43,17 @@ METHOD_CHOICES = (
     "oracle_segmented_revisit_aware",
     "oracle_segmented_td_revisit_aware",
     "oracle_segmented_distill",
+    "oracle_segmented_distill_l001",  # lambda=0.001
+    "oracle_segmented_distill_l005",  # lambda=0.005
+    "oracle_segmented_distill_l020",  # lambda=0.020
+    "oracle_segmented_distill_l050",  # lambda=0.050
+    "oracle_segmented_distill_l200",  # lambda=0.200
+    "oracle_segmented_af015",  # archive_frac=0.15
+    "oracle_segmented_af020",  # archive_frac=0.20
+    "oracle_segmented_af025",  # archive_frac=0.25
+    "oracle_segmented_af030",  # archive_frac=0.30
+    "der_plus_plus",           # DER++ (Buzzega et al. 2020) — no oracle boundary
+    "oracle_der_plus_plus",    # DER++ with oracle boundary epsilon reset
     "morphin_full",
     "morphin_segmented",
     "morphin_detect",
@@ -119,6 +131,13 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--segmented-revisit-recent-mix-end", type=float, default=0.5)
     parser.add_argument("--segmented-revisit-recent-only-steps", type=int, default=0)
     parser.add_argument("--distill-lambda", type=float, default=0.0)
+    parser.add_argument("--distill-new-task-only", type=str2bool, default=True)
+    parser.add_argument("--der-alpha", type=float, default=0.1,
+                        help="DER++ α: weight for Q-value consistency loss on reservoir memory")
+    parser.add_argument("--der-beta", type=float, default=1.0,
+                        help="DER++ β: weight for TD loss on reservoir memory")
+    parser.add_argument("--der-capacity", type=int, default=0,
+                        help="DER++ reservoir capacity (0 = use --buffer-capacity)")
 
     parser.add_argument("--eval-every-episodes", type=int, default=25)
     parser.add_argument("--eval-dense-every-episodes", type=int, default=5)
@@ -150,13 +169,34 @@ def default_adaptation_config(args: argparse.Namespace) -> AdaptationConfig:
     revisit_recent_mix_start: float | None = None
     revisit_recent_mix_end: float | None = None
     revisit_recent_only_steps: int | None = None
-    # distill_lambda is only active for oracle_segmented_distill; all other methods
-    # must stay at 0.0 regardless of what --distill-lambda is passed, so that the
-    # baseline oracle_segmented never accidentally picks up distillation.
-    distill_lambda = args.distill_lambda if args.method == "oracle_segmented_distill" else 0.0
+    # distill_lambda: only active for oracle_segmented_distill variants.
+    # Named sweep variants encode lambda in suffix (e.g. _l020 → 0.020);
+    # base oracle_segmented_distill uses args.distill_lambda.
+    _DISTILL_SWEEP_LAMBDAS = {
+        "oracle_segmented_distill_l001": 0.001,
+        "oracle_segmented_distill_l005": 0.005,
+        "oracle_segmented_distill_l020": 0.020,
+        "oracle_segmented_distill_l050": 0.050,
+        "oracle_segmented_distill_l200": 0.200,
+    }
+    if args.method == "oracle_segmented_distill":
+        distill_lambda = args.distill_lambda
+    elif args.method in _DISTILL_SWEEP_LAMBDAS:
+        distill_lambda = _DISTILL_SWEEP_LAMBDAS[args.method]
+    else:
+        distill_lambda = 0.0
+    _ARCHIVE_SWEEP_FRACS = {
+        "oracle_segmented_af015": 0.15,
+        "oracle_segmented_af020": 0.20,
+        "oracle_segmented_af025": 0.25,
+        "oracle_segmented_af030": 0.30,
+    }
     eps_reset_value = args.eps_reset_value
     eps_decay_steps_after_switch = args.eps_decay_steps_after_switch
-    archive_frac = args.archive_frac
+    if args.method in _ARCHIVE_SWEEP_FRACS:
+        archive_frac = _ARCHIVE_SWEEP_FRACS[args.method]
+    else:
+        archive_frac = args.archive_frac
     recent_mix_start = args.recent_mix_start
     recent_mix_end = args.recent_mix_end
     post_switch_steps = args.post_switch_steps
@@ -223,8 +263,39 @@ def default_adaptation_config(args: argparse.Namespace) -> AdaptationConfig:
         revisit_recent_mix_start = args.segmented_revisit_recent_mix_start
         revisit_recent_mix_end = args.segmented_revisit_recent_mix_end
         revisit_recent_only_steps = args.segmented_revisit_recent_only_steps
-    elif args.method == "oracle_segmented_distill":
+    elif args.method in (
+        "oracle_segmented_distill",
+        "oracle_segmented_distill_l001",
+        "oracle_segmented_distill_l005",
+        "oracle_segmented_distill_l020",
+        "oracle_segmented_distill_l050",
+        "oracle_segmented_distill_l200",
+    ):
         replay_policy = "segmented"
+        epsilon_reset_on_switch = True
+        td_adaptive = False
+    elif args.method in (
+        "oracle_segmented_af015",
+        "oracle_segmented_af020",
+        "oracle_segmented_af025",
+        "oracle_segmented_af030",
+    ):
+        # Same as oracle_segmented but archive_frac is overridden per method name
+        replay_policy = "segmented"
+        epsilon_reset_on_switch = True
+        td_adaptive = False
+    elif args.method == "der_plus_plus":
+        # DER++ — uses keep_all (UniformReplayBuffer) as main buffer;
+        # a separate DERReplayBuffer is managed in the training loop.
+        # No oracle boundary required.
+        replay_policy = "keep_all"
+        epsilon_reset_on_switch = False
+        td_adaptive = False
+    elif args.method == "oracle_der_plus_plus":
+        # DER++ with the same oracle boundary signal used by segmented/distill.
+        # Keeps the original keep_all replay behavior but restores exploration
+        # after task changes, which is critical in this switching RL benchmark.
+        replay_policy = "keep_all"
         epsilon_reset_on_switch = True
         td_adaptive = False
     elif args.method == "morphin_full":
@@ -278,6 +349,7 @@ def default_adaptation_config(args: argparse.Namespace) -> AdaptationConfig:
         post_switch_update_repeats=post_switch_update_repeats,
         post_switch_extra_update_steps=post_switch_extra_update_steps,
         distill_lambda=distill_lambda,
+        distill_new_task_only=bool(args.distill_new_task_only),
     )
 
 
@@ -659,6 +731,13 @@ def main() -> int:
     (run_dir / "config.json").write_text(json.dumps(config_dump, indent=2))
     controller = AdaptationController(adaptation)
     replay_buffer = make_replay_buffer(args, adaptation, replay_buffer_config)
+    # DER++ reservoir buffer — only created for der_plus_plus method
+    _der_capacity = int(args.der_capacity) if int(args.der_capacity) > 0 else int(args.buffer_capacity)
+    der_buffer: DERReplayBuffer | None = (
+        DERReplayBuffer(capacity=_der_capacity)
+        if args.method in {"der_plus_plus", "oracle_der_plus_plus"}
+        else None
+    )
     scratch_refs = load_scratch_refs(args.scratch_summary_json)
     eval_seed_bank = build_eval_seed_bank(
         task_sequence=task_sequence,
@@ -751,6 +830,19 @@ def main() -> int:
                 done=done,
                 task_id=task.task_id,
             )
+            if der_buffer is not None:
+                with torch.no_grad():
+                    _s_t = torch.as_tensor(state[None], dtype=torch.float32, device=device)
+                    _z = agent.online_net(_s_t).squeeze(0).cpu().numpy()
+                der_buffer.add(
+                    state=state,
+                    action=action,
+                    reward=float(reward),
+                    next_state=next_state,
+                    done=done,
+                    task_id=task.task_id,
+                    z_stored=_z,
+                )
             state = next_state if next_state is not None else state
             episode_return += float(reward)
             total_steps += 1
@@ -772,11 +864,19 @@ def main() -> int:
                         device=device,
                         **sample_kwargs,
                     )
+                    _der_batch = (
+                        der_buffer.sample(args.batch_size, device)
+                        if der_buffer is not None
+                        else None
+                    )
                     stats = agent.update(
                         batch=batch,
                         weight_fn=controller.td_loss_weights,
                         frozen_net=controller.frozen_net,
                         distill_lambda=adaptation.distill_lambda,
+                        der_batch=_der_batch,
+                        der_alpha=args.der_alpha,
+                        der_beta=args.der_beta,
                     )
                     train_updates += 1
                     td_abs_mean_values.append(stats["td_abs_mean"])
@@ -808,6 +908,25 @@ def main() -> int:
                             "ph_signal_ema": controller.last_signal_ema,
                             "ph_stat": controller.last_ph_stat,
                             "distill_loss": stats.get("distill_loss", 0.0),
+                            "distill_active": stats.get("distill_active", 0.0),
+                            "distill_archive_samples": stats.get("distill_archive_samples", 0.0),
+                            "distill_lambda_effective": (
+                                adaptation.distill_lambda if controller.frozen_net is not None else 0.0
+                            ),
+                            "der_active": float(_der_batch is not None),
+                            "der_buffer_size": (
+                                float(len(der_buffer)) if der_buffer is not None else math.nan
+                            ),
+                            "der_batch_size": (
+                                float(_der_batch["states"].shape[0]) if _der_batch is not None else 0.0
+                            ),
+                            "der_alpha_loss": stats.get("der_alpha_loss", 0.0),
+                            "der_beta_loss": stats.get("der_beta_loss", 0.0),
+                            "der_aux_loss_weighted": (
+                                args.der_alpha * stats.get("der_alpha_loss", 0.0)
+                                + args.der_beta * stats.get("der_beta_loss", 0.0)
+                            ),
+                            "switch_type_controller": controller.current_switch_type,
                         }
                     )
 
