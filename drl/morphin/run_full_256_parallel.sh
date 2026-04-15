@@ -11,9 +11,9 @@ CAMPAIGN_GROUP="${CAMPAIGN_GROUP:-thesis_9x9_full_256_parallel}"
 BENCHMARKS_CSV="${BENCHMARKS_CSV:-gw9_goal_balanced_ab_v1,gw9_goal_balanced_ac_v1,gw9_goal_balanced_aba_v1,gw9_goal_balanced_abc_v1}"
 METHODS_CSV="${METHODS_CSV:-ddqn_vanilla,oracle_reset,oracle_segmented,oracle_segmented_distill_l001,der_plus_plus}"
 
-SHARD1_SEEDS_CSV="${SHARD1_SEEDS_CSV:-42,43,44,45,46,47,48,49,50,51,52,53}"
-SHARD2_SEEDS_CSV="${SHARD2_SEEDS_CSV:-54,55,56,57,58,59,60,61,62,63,64,65}"
-SHARD3_SEEDS_CSV="${SHARD3_SEEDS_CSV:-66,67,68,69,70,71,72,73,74,75,76,77}"
+SHARD1_SEEDS_CSV="${SHARD1_SEEDS_CSV:-42,43,44,45,46,47,48,49,50,51,52,53,54,55,56}"
+SHARD2_SEEDS_CSV="${SHARD2_SEEDS_CSV:-57,58,59,60,61,62,63,64,65,66,67,68,69,70,71}"
+SHARD3_SEEDS_CSV="${SHARD3_SEEDS_CSV:-72,73,74,75,76,77,78,79,80,81,82,83,84,85,86}"
 SCRATCH_SEEDS_CSV="${SCRATCH_SEEDS_CSV:-$SHARD1_SEEDS_CSV}"
 
 OBS_MODE="${OBS_MODE:-agent_target}"
@@ -48,17 +48,23 @@ SCRATCH_REF_MIN_FINAL_SUCCESS="${SCRATCH_REF_MIN_FINAL_SUCCESS:-0.8}"
 SCRATCH_REF_MIN_VALID_RUNS="${SCRATCH_REF_MIN_VALID_RUNS:-3}"
 SCRATCH_REF_MIN_VALID_FRACTION="${SCRATCH_REF_MIN_VALID_FRACTION:-0.7}"
 
-TS="$(date '+%Y%m%d_%H%M%S')"
-CAMPAIGN_ROOT="$SCRIPT_DIR/logs/morphin_gridworld/$CAMPAIGN_GROUP/session_$TS"
+SESSION_TS="${SESSION_TS:-$(date '+%Y%m%d_%H%M%S')}"
+CAMPAIGN_ROOT="$SCRIPT_DIR/logs/morphin_gridworld/$CAMPAIGN_GROUP/session_$SESSION_TS"
 CHILD_LOG_ROOT="$CAMPAIGN_ROOT/children"
 COMBINED_RUNS_ROOT="$CAMPAIGN_ROOT/runs"
 COMBINED_ANALYSIS_DIR="$CAMPAIGN_ROOT/analysis"
 SHARD_LOG_DIR="$CAMPAIGN_ROOT/shard_logs"
+CAMPAIGN_STATUS_FILE="$CAMPAIGN_ROOT/campaign_status.env"
+SHARD_PID_FILE="$CAMPAIGN_ROOT/shard_pids.csv"
+LAUNCHER_PID_FILE="$CAMPAIGN_ROOT/launcher.pid"
+RUN_LOG_FILE="${RUN_LOG_FILE:-}"
 mkdir -p "$CHILD_LOG_ROOT" "$COMBINED_RUNS_ROOT" "$COMBINED_ANALYSIS_DIR" "$SHARD_LOG_DIR"
 
 if [[ -z "${SHARED_SCRATCH_REFS_JSON:-}" ]]; then
   SHARED_SCRATCH_REFS_JSON="$CAMPAIGN_ROOT/shared_scratch_refs.json"
 fi
+LAST_LAUNCH_PID=""
+START_EPOCH="$(date '+%s')"
 
 timestamp() { date '+%Y-%m-%d %H:%M:%S'; }
 
@@ -70,9 +76,77 @@ py_run() {
   PYTHONPATH="$PROJECT_ROOT${PYTHONPATH:+:$PYTHONPATH}" "$PYTHON_BIN" "$@"
 }
 
+count_csv_items() {
+  local csv="$1"
+  if [[ -z "$csv" ]]; then
+    echo 0
+    return
+  fi
+  awk -F',' '{print NF}' <<<"$csv"
+}
+
+refresh_shard_pid_file() {
+  printf 'shard_name,pid,status,seeds_csv,log_file\n' >"$SHARD_PID_FILE"
+  local idx
+  for idx in "${!SHARD_NAMES[@]}"; do
+    printf '%s,%s,%s,%s,%s\n' \
+      "${SHARD_NAMES[$idx]}" \
+      "${SHARD_PIDS[$idx]:-}" \
+      "${SHARD_STATUS[$idx]:-pending}" \
+      "${SHARD_SEEDS[$idx]}" \
+      "$SHARD_LOG_DIR/${SHARD_NAMES[$idx]}.log" >>"$SHARD_PID_FILE"
+  done
+}
+
+write_campaign_status() {
+  local state="$1"
+  local method_count benchmark_count seed_count expected_runs completed_runs last_update_epoch
+  local idx
+
+  method_count="$(count_csv_items "$METHODS_CSV")"
+  benchmark_count="$(count_csv_items "$BENCHMARKS_CSV")"
+  seed_count=0
+  for idx in "${!SHARD_SEEDS[@]}"; do
+    seed_count=$((seed_count + $(count_csv_items "${SHARD_SEEDS[$idx]}")))
+  done
+  expected_runs=$((method_count * benchmark_count * seed_count))
+  completed_runs="$(find "$CHILD_LOG_ROOT" -name summary.json 2>/dev/null | wc -l | tr -d '[:space:]')"
+  last_update_epoch="$(date '+%s')"
+
+  {
+    printf "STATE=%q\n" "$state"
+    printf "CAMPAIGN_ROOT=%q\n" "$CAMPAIGN_ROOT"
+    printf "SESSION_TS=%q\n" "$SESSION_TS"
+    printf "START_EPOCH=%q\n" "$START_EPOCH"
+    printf "LAST_UPDATE_EPOCH=%q\n" "$last_update_epoch"
+    printf "LAUNCHER_PID=%q\n" "$$"
+    printf "RUN_LOG_FILE=%q\n" "$RUN_LOG_FILE"
+    printf "SHARED_SCRATCH_REFS_JSON=%q\n" "$SHARED_SCRATCH_REFS_JSON"
+    printf "TOTAL_METHODS=%q\n" "$method_count"
+    printf "TOTAL_BENCHMARKS=%q\n" "$benchmark_count"
+    printf "TOTAL_SEEDS=%q\n" "$seed_count"
+    printf "TOTAL_EXPECTED_RUNS=%q\n" "$expected_runs"
+    printf "TOTAL_COMPLETED_RUNS=%q\n" "$completed_runs"
+    for idx in "${!SHARD_NAMES[@]}"; do
+      printf "SHARD%d_NAME=%q\n" "$((idx + 1))" "${SHARD_NAMES[$idx]}"
+      printf "SHARD%d_PID=%q\n" "$((idx + 1))" "${SHARD_PIDS[$idx]:-}"
+      printf "SHARD%d_STATUS=%q\n" "$((idx + 1))" "${SHARD_STATUS[$idx]:-pending}"
+      printf "SHARD%d_SEEDS_CSV=%q\n" "$((idx + 1))" "${SHARD_SEEDS[$idx]}"
+      printf "SHARD%d_LOG_FILE=%q\n" "$((idx + 1))" "$SHARD_LOG_DIR/${SHARD_NAMES[$idx]}.log"
+    done
+  } >"$CAMPAIGN_STATUS_FILE"
+
+  printf '%s\n' "$$" >"$LAUNCHER_PID_FILE"
+  refresh_shard_pid_file
+}
+
 extract_session_root() {
   local log_file="$1"
-  rg -o 'Session root: .*' "$log_file" | tail -n1 | sed 's/.*Session root: //'
+  if command -v rg >/dev/null 2>&1; then
+    rg -o 'Session root: .*' "$log_file" | tail -n1 | sed 's/.*Session root: //'
+    return
+  fi
+  grep -o 'Session root: .*' "$log_file" | tail -n1 | sed 's/.*Session root: //'
 }
 
 copy_run_tree() {
@@ -135,7 +209,7 @@ launch_shard() {
   local shard_name="$1"
   local seeds_csv="$2"
   local shard_log="$SHARD_LOG_DIR/${shard_name}.log"
-  log "Launching $shard_name with seeds: $seeds_csv"
+  log "Launching $shard_name with seeds: $seeds_csv" >&2
   (
     LOG_ROOT="$CHILD_LOG_ROOT" \
     RUN_PROFILE="$RUN_PROFILE" \
@@ -169,7 +243,7 @@ launch_shard() {
     ARCHIVE_BUFFER_CAPACITY="$ARCHIVE_BUFFER_CAPACITY" \
     bash run_experiments_morphin.sh
   ) >"$shard_log" 2>&1 &
-  echo $!
+  LAST_LAUNCH_PID="$!"
 }
 
 aggregate_combined_session() {
@@ -277,32 +351,50 @@ echo "  Campaign dir: $CAMPAIGN_ROOT"
 echo "============================================================"
 echo ""
 
-write_campaign_config
-run_shared_scratch_refs
-
 declare -a SHARD_NAMES=("shard1" "shard2" "shard3")
 declare -a SHARD_SEEDS=("$SHARD1_SEEDS_CSV" "$SHARD2_SEEDS_CSV" "$SHARD3_SEEDS_CSV")
 declare -a SHARD_PIDS=()
 declare -a SHARD_STATUS=()
+write_campaign_status "initializing"
+
+write_campaign_config
+write_campaign_status "building_scratch_refs"
+run_shared_scratch_refs
+write_campaign_status "scratch_refs_ready"
 
 for idx in "${!SHARD_NAMES[@]}"; do
-  SHARD_PIDS+=("$(launch_shard "${SHARD_NAMES[$idx]}" "${SHARD_SEEDS[$idx]}")")
+  launch_shard "${SHARD_NAMES[$idx]}" "${SHARD_SEEDS[$idx]}"
+  SHARD_PIDS+=("$LAST_LAUNCH_PID")
   SHARD_STATUS+=("running")
 done
+write_campaign_status "running_shards"
 
 overall_exit=0
+successful_shards=0
 for idx in "${!SHARD_PIDS[@]}"; do
   if wait "${SHARD_PIDS[$idx]}"; then
     SHARD_STATUS[$idx]="ok"
+    successful_shards=$((successful_shards + 1))
     log "${SHARD_NAMES[$idx]} finished successfully"
   else
     SHARD_STATUS[$idx]="failed"
     overall_exit=1
     log "${SHARD_NAMES[$idx]} failed"
   fi
+  write_campaign_status "running_shards"
 done
 
-aggregate_combined_session SHARD_NAMES SHARD_SEEDS SHARD_STATUS
+if [[ $successful_shards -gt 0 ]]; then
+  write_campaign_status "aggregating"
+  aggregate_combined_session SHARD_NAMES SHARD_SEEDS SHARD_STATUS
+else
+  log "No shard completed successfully; skipping combined aggregation"
+fi
+if [[ $overall_exit -eq 0 ]]; then
+  write_campaign_status "done"
+else
+  write_campaign_status "partial_or_failed"
+fi
 
 echo ""
 echo "============================================================"

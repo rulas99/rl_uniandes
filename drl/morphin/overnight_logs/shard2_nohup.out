@@ -1,0 +1,23 @@
+nohup: no se tendrá en cuenta la entrada
+
+============================================================
+  MORPHIN Full 256 Shard
+  2026-03-20 13:04:02
+  Session group : thesis_9x9_full_256_shard2
+  Seeds         : 57,58,59,60,61,62,63,64,65,66,67,68,69,70,71
+  Benchmarks    : gw9_goal_balanced_ab_v1,gw9_goal_balanced_ac_v1,gw9_goal_balanced_aba_v1,gw9_goal_balanced_abc_v1
+  Methods       : ddqn_vanilla,oracle_reset,oracle_segmented,oracle_segmented_distill_l001,der_plus_plus
+  Archive frac  : 0.10
+  DER alpha     : 0.01
+  Log           : overnight_logs/thesis_9x9_full_256_shard2_20260320_130402.log
+  Scratch refs  : /home/raul/Escritorio/extra/misis/rl/rl_uniandes/drl/morphin/logs/morphin_gridworld/thesis_9x9_full_256_parallel/session_20260318_211023/shared_scratch_refs.json
+============================================================
+
+
+============================================================
+  [2026-03-22 08:51:04] DONE — thesis_9x9_full_256_shard2
+============================================================
+
+  Log     : /home/raul/Escritorio/extra/misis/rl/rl_uniandes/drl/morphin/overnight_logs/thesis_9x9_full_256_shard2_20260320_130402.log
+  Results : /home/raul/Escritorio/extra/misis/rl/rl_uniandes/drl/morphin/logs/morphin_gridworld/thesis_9x9_full_256_shard2/
+

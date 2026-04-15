@@ -415,7 +415,7 @@ case "$RUN_PROFILE" in
     # TD on all samples + distill anchor on archive).
     # 5 seeds default (override via SEEDS_CSV for overnight runs).
     MODE="continual"
-    AUTO_BUILD_SCRATCH_REFS=1
+    AUTO_BUILD_SCRATCH_REFS="${AUTO_BUILD_SCRATCH_REFS:-1}"
     REUSE_SCRATCH_REFS_BY_TASK_SET="${REUSE_SCRATCH_REFS_BY_TASK_SET:-1}"
     METHOD_SET="${METHOD_SET:-thesis_full_256}"
     BENCHMARKS_CSV="${BENCHMARKS_CSV:-gw9_goal_balanced_ab_v1,gw9_goal_balanced_ac_v1,gw9_goal_balanced_aba_v1,gw9_goal_balanced_abc_v1}"
