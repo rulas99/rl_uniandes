@@ -16,10 +16,12 @@ TASK_IDS_CSV="${TASK_IDS_CSV:-}"
 SCRATCH_TASK_IDS_CSV="${SCRATCH_TASK_IDS_CSV:-}"
 SCRATCH_REFS_JSON="${SCRATCH_REFS_JSON:-}"
 AUTO_BUILD_SCRATCH_REFS="${AUTO_BUILD_SCRATCH_REFS:-0}"
+ARTIFACT_LEVEL="${ARTIFACT_LEVEL:-}"
 
 case "$RUN_PROFILE" in
   scratch)
     MODE="scratch_task"
+    ARTIFACT_LEVEL="${ARTIFACT_LEVEL:-lean}"
     EPISODES_PER_TASK="${EPISODES_PER_TASK:-400}"
     EVAL_EPISODES="${EVAL_EPISODES:-10}"
     EVAL_EVERY_EPISODES="${EVAL_EVERY_EPISODES:-10}"
@@ -442,6 +444,7 @@ case "$RUN_PROFILE" in
     ARCHIVE_BUFFER_CAPACITY="${ARCHIVE_BUFFER_CAPACITY:-8000}"
     SCRATCH_BUFFER_CAPACITY="${SCRATCH_BUFFER_CAPACITY:-20000}"
     SCRATCH_REF_MIN_VALID_FRACTION="${SCRATCH_REF_MIN_VALID_FRACTION:-0.7}"
+    ARTIFACT_LEVEL="${ARTIFACT_LEVEL:-lean}"
     ;;
   thesis_archive_sweep)
     # Archive fraction sweep: oracle_segmented with af=0.10,0.15,0.20,0.25,0.30
@@ -651,6 +654,7 @@ SCRATCH_GATE_ENABLED="${SCRATCH_GATE_ENABLED:-0}"
 SCRATCH_GATE_REQUIRE_STABLE="${SCRATCH_GATE_REQUIRE_STABLE:-1}"
 SCRATCH_GATE_MIN_PASSING_FRACTION="${SCRATCH_GATE_MIN_PASSING_FRACTION:-1.0}"
 SCRATCH_GATE_MIN_FINAL_SUCCESS="${SCRATCH_GATE_MIN_FINAL_SUCCESS:-$SCRATCH_REF_MIN_FINAL_SUCCESS}"
+ARTIFACT_LEVEL="${ARTIFACT_LEVEL:-full}"
 METHOD_SET="${METHOD_SET:-main}"
 
 METHOD_SOURCE="set:${METHOD_SET}"
@@ -758,6 +762,7 @@ log "Distill: lambda=$DISTILL_LAMBDA new_task_only=$DISTILL_NEW_TASK_ONLY"
 log "DER++: alpha=$DER_ALPHA beta=$DER_BETA der_capacity=${DER_CAPACITY:-0}"
 log "Replay revisit-aware: revisit_recent_mix=$SEGMENTED_REVISIT_RECENT_MIX_START->$SEGMENTED_REVISIT_RECENT_MIX_END revisit_recent_only_steps=$SEGMENTED_REVISIT_RECENT_ONLY_STEPS"
 log "TD weighting: alpha_max_mult=$ALPHA_MAX_MULT td_k=$TD_K"
+log "Artifact level: $ARTIFACT_LEVEL"
 log "Dense eval: every $EVAL_DENSE_EVERY_EPISODES within $EVAL_DENSE_WINDOW_EPISODES eps after switch | Max steps/ep: $MAX_STEPS_PER_EPISODE"
 
 PLAN_CSV="$SESSION_ROOT/experiment_plan.csv"
@@ -773,6 +778,7 @@ build_common_args() {
   local obs_mode="$2"
   printf '%s\0' \
     --benchmark "$benchmark" \
+    --artifact-level "$ARTIFACT_LEVEL" \
     --episodes-per-task "$EPISODES_PER_TASK" \
     --max-steps-per-episode "$MAX_STEPS_PER_EPISODE" \
     --eval-episodes "$EVAL_EPISODES" \
@@ -819,6 +825,7 @@ build_scratch_args() {
   local obs_mode="$2"
   printf '%s\0' \
     --benchmark "$benchmark" \
+    --artifact-level "$ARTIFACT_LEVEL" \
     --episodes-per-task "$SCRATCH_EPISODES_PER_TASK" \
     --max-steps-per-episode "$SCRATCH_MAX_STEPS_PER_EPISODE" \
     --eval-episodes "$SCRATCH_EVAL_EPISODES" \

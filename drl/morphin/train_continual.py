@@ -148,6 +148,7 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--threshold-min-consecutive-evals", type=int, default=2)
     parser.add_argument("--recovery-window", type=int, default=25)
     parser.add_argument("--detector-max-delay-episodes", type=int, default=25)
+    parser.add_argument("--artifact-level", choices=["full", "lean"], default="full")
     parser.add_argument("--scratch-summary-json", type=str, default="")
     return parser
 
@@ -739,12 +740,14 @@ def main() -> int:
         else None
     )
     scratch_refs = load_scratch_refs(args.scratch_summary_json)
+    write_full_artifacts = args.artifact_level == "full"
     eval_seed_bank = build_eval_seed_bank(
         task_sequence=task_sequence,
         base_seed=args.eval_bank_base_seed + args.seed,
         num_eval_episodes=args.eval_episodes,
     )
-    (run_dir / "eval_seed_bank.json").write_text(json.dumps(eval_seed_bank, indent=2))
+    if write_full_artifacts:
+        (run_dir / "eval_seed_bank.json").write_text(json.dumps(eval_seed_bank, indent=2))
 
     total_episodes = args.episodes_per_task * len(task_sequence)
     episode_rows: list[dict[str, object]] = []
@@ -882,53 +885,54 @@ def main() -> int:
                     td_abs_mean_values.append(stats["td_abs_mean"])
                     td_abs_max_values.append(stats["td_abs_max"])
                     loss_values.append(stats["loss"])
-                    update_rows.append(
-                        {
-                            "global_step": total_steps,
-                            "episode": episode_idx + 1,
-                            "task_id": task.task_id,
-                            "loss": stats["loss"],
-                            "td_abs_mean": stats["td_abs_mean"],
-                            "td_abs_max": stats["td_abs_max"],
-                            "q_sa_mean": stats["q_sa_mean"],
-                            "target_q_mean": stats["target_q_mean"],
-                            "epsilon": controller.current_epsilon(),
-                            "p_recent": (
-                                controller.segmented_recent_fraction()
-                                if adaptation.replay_policy == "segmented"
-                                else math.nan
-                            ),
-                            "recent_size": (
-                                replay_buffer.num_recent() if hasattr(replay_buffer, "num_recent") else math.nan
-                            ),
-                            "archive_size": (
-                                replay_buffer.num_archive() if hasattr(replay_buffer, "num_archive") else math.nan
-                            ),
-                            "ph_signal_raw": controller.last_signal_raw,
-                            "ph_signal_ema": controller.last_signal_ema,
-                            "ph_stat": controller.last_ph_stat,
-                            "distill_loss": stats.get("distill_loss", 0.0),
-                            "distill_active": stats.get("distill_active", 0.0),
-                            "distill_archive_samples": stats.get("distill_archive_samples", 0.0),
-                            "distill_lambda_effective": (
-                                adaptation.distill_lambda if controller.frozen_net is not None else 0.0
-                            ),
-                            "der_active": float(_der_batch is not None),
-                            "der_buffer_size": (
-                                float(len(der_buffer)) if der_buffer is not None else math.nan
-                            ),
-                            "der_batch_size": (
-                                float(_der_batch["states"].shape[0]) if _der_batch is not None else 0.0
-                            ),
-                            "der_alpha_loss": stats.get("der_alpha_loss", 0.0),
-                            "der_beta_loss": stats.get("der_beta_loss", 0.0),
-                            "der_aux_loss_weighted": (
-                                args.der_alpha * stats.get("der_alpha_loss", 0.0)
-                                + args.der_beta * stats.get("der_beta_loss", 0.0)
-                            ),
-                            "switch_type_controller": controller.current_switch_type,
-                        }
-                    )
+                    if write_full_artifacts:
+                        update_rows.append(
+                            {
+                                "global_step": total_steps,
+                                "episode": episode_idx + 1,
+                                "task_id": task.task_id,
+                                "loss": stats["loss"],
+                                "td_abs_mean": stats["td_abs_mean"],
+                                "td_abs_max": stats["td_abs_max"],
+                                "q_sa_mean": stats["q_sa_mean"],
+                                "target_q_mean": stats["target_q_mean"],
+                                "epsilon": controller.current_epsilon(),
+                                "p_recent": (
+                                    controller.segmented_recent_fraction()
+                                    if adaptation.replay_policy == "segmented"
+                                    else math.nan
+                                ),
+                                "recent_size": (
+                                    replay_buffer.num_recent() if hasattr(replay_buffer, "num_recent") else math.nan
+                                ),
+                                "archive_size": (
+                                    replay_buffer.num_archive() if hasattr(replay_buffer, "num_archive") else math.nan
+                                ),
+                                "ph_signal_raw": controller.last_signal_raw,
+                                "ph_signal_ema": controller.last_signal_ema,
+                                "ph_stat": controller.last_ph_stat,
+                                "distill_loss": stats.get("distill_loss", 0.0),
+                                "distill_active": stats.get("distill_active", 0.0),
+                                "distill_archive_samples": stats.get("distill_archive_samples", 0.0),
+                                "distill_lambda_effective": (
+                                    adaptation.distill_lambda if controller.frozen_net is not None else 0.0
+                                ),
+                                "der_active": float(_der_batch is not None),
+                                "der_buffer_size": (
+                                    float(len(der_buffer)) if der_buffer is not None else math.nan
+                                ),
+                                "der_batch_size": (
+                                    float(_der_batch["states"].shape[0]) if _der_batch is not None else 0.0
+                                ),
+                                "der_alpha_loss": stats.get("der_alpha_loss", 0.0),
+                                "der_beta_loss": stats.get("der_beta_loss", 0.0),
+                                "der_aux_loss_weighted": (
+                                    args.der_alpha * stats.get("der_alpha_loss", 0.0)
+                                    + args.der_beta * stats.get("der_beta_loss", 0.0)
+                                ),
+                                "switch_type_controller": controller.current_switch_type,
+                            }
+                        )
 
             if done:
                 success = float(bool(info.get("is_success", False)))
@@ -1037,21 +1041,22 @@ def main() -> int:
                             **seen_metrics,
                         }
                     )
-                for seen_task_id in seen_tasks:
-                    seen_task = TASK_LIBRARY[seen_task_id]
-                    rollout_rows.append(
-                        {
-                            "episode": episode_idx + 1,
-                            "eval_scope": "seen_tasks_end",
-                            **trace_greedy_rollout(
-                                agent=agent,
-                                task=seen_task,
-                                obs_mode=obs_mode,
-                                seed=eval_seed_bank[seen_task_id][0],
-                                max_steps=args.max_steps_per_episode,
-                            ),
-                        }
-                    )
+                if write_full_artifacts:
+                    for seen_task_id in seen_tasks:
+                        seen_task = TASK_LIBRARY[seen_task_id]
+                        rollout_rows.append(
+                            {
+                                "episode": episode_idx + 1,
+                                "eval_scope": "seen_tasks_end",
+                                **trace_greedy_rollout(
+                                    agent=agent,
+                                    task=seen_task,
+                                    obs_mode=obs_mode,
+                                    seed=eval_seed_bank[seen_task_id][0],
+                                    max_steps=args.max_steps_per_episode,
+                                ),
+                            }
+                        )
 
         if (episode_idx + 1) % 50 == 0 or episode_idx == total_episodes - 1:
             print(
@@ -1100,18 +1105,19 @@ def main() -> int:
         adaptation_controller=controller,
     )
 
-    write_csv(run_dir / "episode_metrics.csv", episode_rows)
     write_csv(run_dir / "eval_metrics.csv", eval_rows)
-    write_csv(run_dir / "update_metrics.csv", update_rows)
     write_csv(run_dir / "switch_metrics_train.csv", train_switch_rows)
     write_csv(run_dir / "switch_metrics.csv", eval_switch_rows)
     write_csv(run_dir / "detector_events.csv", detector_rows)
     write_csv(run_dir / "detection_metrics.csv", detection_rows)
-    with (run_dir / "canonical_rollouts.jsonl").open("w") as handle:
-        for row in rollout_rows:
-            handle.write(json.dumps(row) + "\n")
     (run_dir / "summary.json").write_text(json.dumps(summary, indent=2))
-    agent.save(run_dir / "model_final.pt")
+    if write_full_artifacts:
+        write_csv(run_dir / "episode_metrics.csv", episode_rows)
+        write_csv(run_dir / "update_metrics.csv", update_rows)
+        with (run_dir / "canonical_rollouts.jsonl").open("w") as handle:
+            for row in rollout_rows:
+                handle.write(json.dumps(row) + "\n")
+        agent.save(run_dir / "model_final.pt")
 
     if args.mode == "scratch_task":
         scratch_summary = {

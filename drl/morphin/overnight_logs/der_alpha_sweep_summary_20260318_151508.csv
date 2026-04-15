@@ -1,7 +1,0 @@
-alpha,session_group,session_id,benchmark,method,final_seen_success_mean,current_task_final_success,new_task_recovery_auc_success_eval_mean,new_task_time_to_threshold_eval_steps_mean,switch_time_to_threshold_eval_steps_delta_vs_scratch_mean,switch_log_adaptation_gain_vs_scratch_steps_mean
-0.001,thesis_der_alpha_sweep_0p001,session_20260318_151508,gw9_goal_balanced_ab_v1,der_plus_plus,0.5,0.0,0.0,nan,nan,nan
-0.001,thesis_der_alpha_sweep_0p001,session_20260318_151508,gw9_goal_balanced_abc_v1,der_plus_plus,0.6666666666666666,1.0,0.06944444449618459,16738.0,8471.0,-0.7053486843009611
-0.003,thesis_der_alpha_sweep_0p003,session_20260318_154430,gw9_goal_balanced_ab_v1,der_plus_plus,0.75,0.5,0.0833333358168602,22377.0,13098.5,-0.8802706673493071
-0.003,thesis_der_alpha_sweep_0p003,session_20260318_154430,gw9_goal_balanced_abc_v1,der_plus_plus,0.8333333333333333,1.0,0.2708333395421505,14565.5,6045.625,-0.09437219962644028
-0.01,thesis_der_alpha_sweep_0p01,session_20260318_160433,gw9_goal_balanced_ab_v1,der_plus_plus,0.75,0.5,0.1388888917863369,28770.0,19491.5,-1.0993072265834951
-0.01,thesis_der_alpha_sweep_0p01,session_20260318_160433,gw9_goal_balanced_abc_v1,der_plus_plus,1.0,1.0,0.31944444589316845,18774.75,10002.0,-0.40524517451415926
