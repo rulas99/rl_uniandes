@@ -5,6 +5,7 @@ SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 cd "$SCRIPT_DIR"
 
 DEFAULT_PYTHON_BIN="$SCRIPT_DIR/../.venv/bin/python"
+DEFAULT_SHARED_SCRATCH_REFS_JSON="$SCRIPT_DIR/logs/morphin_gridworld/thesis_9x9_full_256_parallel/session_20260318_211023/shared_scratch_refs.json"
 if [[ -z "${PYTHON_BIN:-}" && -x "$DEFAULT_PYTHON_BIN" ]]; then
   PYTHON_BIN="$DEFAULT_PYTHON_BIN"
 else
@@ -21,6 +22,9 @@ DER_BETA="${DER_BETA:-1.0}"
 DER_CAPACITY="${DER_CAPACITY:-0}"
 ARTIFACT_LEVEL="${ARTIFACT_LEVEL:-lean}"
 SHARED_REFS="${SHARED_SCRATCH_REFS_JSON:-}"
+if [[ -z "$SHARED_REFS" && -f "$DEFAULT_SHARED_SCRATCH_REFS_JSON" ]]; then
+  SHARED_REFS="$DEFAULT_SHARED_SCRATCH_REFS_JSON"
+fi
 
 mkdir -p overnight_logs
 TS="$(date '+%Y%m%d_%H%M%S')"
