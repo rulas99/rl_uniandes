@@ -54,6 +54,8 @@ METHOD_CHOICES = (
     "oracle_segmented_af030",  # archive_frac=0.30
     "der_plus_plus",           # DER++ (Buzzega et al. 2020) — no oracle boundary
     "oracle_der_plus_plus",    # DER++ with oracle boundary epsilon reset
+    "ph_reset",                # Page-Hinkley detected boundary + epsilon reset
+    "ph_segmented",            # Page-Hinkley detected boundary + segmented replay
     "morphin_full",
     "morphin_segmented",
     "morphin_detect",
@@ -114,11 +116,11 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--eps-decay-steps-after-switch", type=int, default=30000)
     parser.add_argument("--alpha-max-mult", type=float, default=3.0)
     parser.add_argument("--td-k", type=float, default=1.0)
-    parser.add_argument("--detector-signal", choices=["return", "success"], default="return")
+    parser.add_argument("--detector-signal", choices=["return", "return_raw", "success"], default="return")
     parser.add_argument("--detector-ema-alpha", type=float, default=0.05)
-    parser.add_argument("--ph-delta", type=float, default=0.005)
+    parser.add_argument("--ph-delta", type=float, default=0.02)
     parser.add_argument("--ph-threshold", type=float, default=5.0)
-    parser.add_argument("--ph-min-instances", type=int, default=20)
+    parser.add_argument("--ph-min-instances", type=int, default=80)
     parser.add_argument("--keep-recent-frac", type=float, default=0.2)
     parser.add_argument("--archive-frac", type=float, default=0.10)
     parser.add_argument("--recent-mix-start", type=float, default=0.8)
@@ -223,7 +225,7 @@ def default_adaptation_config(args: argparse.Namespace) -> AdaptationConfig:
         replay_policy = "keep_all"
         epsilon_reset_on_switch = True
         td_adaptive = True
-    elif args.method == "detector_reset_only":
+    elif args.method in {"detector_reset_only", "ph_reset"}:
         replay_policy = "keep_all"
         epsilon_reset_on_switch = True
         td_adaptive = False
@@ -311,7 +313,7 @@ def default_adaptation_config(args: argparse.Namespace) -> AdaptationConfig:
         replay_policy = "keep_all"
         epsilon_reset_on_switch = True
         td_adaptive = False
-    elif args.method == "morphin_detect_seg":
+    elif args.method in {"morphin_detect_seg", "ph_segmented"}:
         replay_policy = "segmented"
         epsilon_reset_on_switch = True
         td_adaptive = False
@@ -606,7 +608,21 @@ def summarize_run(
         "num_revisit_task_switches": int(sum(1 for row in switch_rows_eval if str(row.get("switch_type")) == "revisit_task")),
         "num_oracle_switches": int(sum(1 for row in episode_rows if row["switch_event"] == "oracle")),
         "num_detected_drifts": int(adaptation_controller.num_detections),
+        "num_detected_switches": int(
+            sum(1 for row in detection_rows if int(row.get("detected", 0)) == 1)
+        ),
+        "detector_recall": (
+            float(sum(1 for row in detection_rows if int(row.get("detected", 0)) == 1))
+            / float(len(detection_rows))
+            if detection_rows
+            else math.nan
+        ),
         "num_false_alarms": int(false_alarm_count),
+        "detector_signal": args.detector_signal,
+        "detector_ema_alpha": float(args.detector_ema_alpha),
+        "ph_delta": float(args.ph_delta),
+        "ph_threshold": float(args.ph_threshold),
+        "ph_min_instances": int(args.ph_min_instances),
         "mean_detection_delay_episodes": (
             float(np.mean([float(row["delay_episodes"]) for row in detection_rows if row["delay_episodes"] is not None]))
             if any(row["delay_episodes"] is not None for row in detection_rows)

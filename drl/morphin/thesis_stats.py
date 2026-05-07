@@ -34,6 +34,8 @@ DEFAULT_METHODS_ORDER = [
     "oracle_segmented",
     "oracle_segmented_distill_l001",
     "der_plus_plus",
+    "ph_reset",
+    "ph_segmented",
 ]
 METHODS_ORDER = list(DEFAULT_METHODS_ORDER)
 METHOD_LABELS = {
@@ -42,6 +44,8 @@ METHOD_LABELS = {
     "oracle_segmented":               "Oracle Seg.",
     "oracle_segmented_distill_l001":  "Oracle Seg. + Distill (λ=0.001)",
     "der_plus_plus":                  "DER++",
+    "ph_reset":                       "PH Reset",
+    "ph_segmented":                   "PH Seg.",
 }
 METHOD_SHORT_LABELS = {
     "ddqn_vanilla": "V",
@@ -49,6 +53,8 @@ METHOD_SHORT_LABELS = {
     "oracle_segmented": "S",
     "oracle_segmented_distill_l001": "S+D",
     "der_plus_plus": "DER++",
+    "ph_reset": "PH-R",
+    "ph_segmented": "PH-S",
 }
 DEFAULT_COMPARISONS = [
     ("ddqn_vanilla", "oracle_reset"),
@@ -56,6 +62,10 @@ DEFAULT_COMPARISONS = [
     ("oracle_segmented", "oracle_segmented_distill_l001"),
     ("oracle_segmented", "der_plus_plus"),
     ("oracle_segmented_distill_l001", "der_plus_plus"),
+    ("oracle_reset", "ph_reset"),
+    ("ph_reset", "ph_segmented"),
+    ("oracle_segmented", "ph_segmented"),
+    ("der_plus_plus", "ph_segmented"),
 ]
 BENCH_ORDER = [
     "gw9_goal_balanced_ab_v1",

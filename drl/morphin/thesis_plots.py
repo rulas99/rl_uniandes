@@ -33,6 +33,8 @@ DEFAULT_METHODS_ORDER = [
     "oracle_segmented",
     "oracle_segmented_distill_l001",
     "der_plus_plus",
+    "ph_reset",
+    "ph_segmented",
 ]
 METHODS_ORDER = list(DEFAULT_METHODS_ORDER)
 METHOD_LABELS = {
@@ -41,6 +43,8 @@ METHOD_LABELS = {
     "oracle_segmented":              "Oracle Seg.",
     "oracle_segmented_distill_l001": r"Oracle Seg. + Distill ($\lambda$=0.001)",
     "der_plus_plus":                 "DER++",
+    "ph_reset":                      "PH Reset",
+    "ph_segmented":                  "PH Seg.",
 }
 METHOD_SHORT_LABELS = {
     "ddqn_vanilla": "V",
@@ -48,6 +52,8 @@ METHOD_SHORT_LABELS = {
     "oracle_segmented": "S",
     "oracle_segmented_distill_l001": "S+D",
     "der_plus_plus": "DER++",
+    "ph_reset": "PH-R",
+    "ph_segmented": "PH-S",
 }
 METHOD_COLORS = {
     "ddqn_vanilla":                  "#888888",
@@ -55,6 +61,8 @@ METHOD_COLORS = {
     "oracle_segmented":              "#4878d0",
     "oracle_segmented_distill_l001": "#6acc65",
     "der_plus_plus":                 "#d65f5f",
+    "ph_reset":                      "#9c755f",
+    "ph_segmented":                  "#b279a2",
 }
 METHOD_LS = {
     "ddqn_vanilla":                  ":",
@@ -62,6 +70,8 @@ METHOD_LS = {
     "oracle_segmented":              "-",
     "oracle_segmented_distill_l001": "-.",
     "der_plus_plus":                 (0, (3, 1, 1, 1)),
+    "ph_reset":                      (0, (1, 1)),
+    "ph_segmented":                  (0, (5, 1)),
 }
 BENCH_ORDER = [
     "gw9_goal_balanced_ab_v1",

@@ -24,9 +24,9 @@ class AdaptationConfig:
     td_k: float = 1.0
     detector_signal: str = "return"
     detector_ema_alpha: float = 0.05
-    ph_delta: float = 0.005
+    ph_delta: float = 0.02
     ph_threshold: float = 5.0
-    ph_min_instances: int = 20
+    ph_min_instances: int = 80
     replay_policy: str = "keep_all"
     keep_recent_frac: float = 0.2
     archive_frac: float = 0.25
@@ -130,6 +130,8 @@ class AdaptationController:
     def uses_detector(self) -> bool:
         return self.config.method in {
             "detector_reset_only",
+            "ph_reset",
+            "ph_segmented",
             "morphin_full",
             "morphin_segmented",
             "morphin_detect",
@@ -297,4 +299,6 @@ class AdaptationController:
         if self.config.detector_signal == "return":
             scale = max(1.0, float(reward_scale))
             return -(float(episode_return) / scale)
+        if self.config.detector_signal == "return_raw":
+            return -float(episode_return)
         raise ValueError(f"Unsupported detector signal: {self.config.detector_signal}")

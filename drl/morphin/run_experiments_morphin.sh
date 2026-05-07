@@ -3,7 +3,12 @@ set -euo pipefail
 
 ROOT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 PROJECT_ROOT="$(cd "$ROOT_DIR/../../../.." && pwd)"
-PYTHON_BIN="${PYTHON_BIN:-python3}"
+DEFAULT_PYTHON_BIN="$ROOT_DIR/../.venv/bin/python"
+if [[ -z "${PYTHON_BIN:-}" && -x "$DEFAULT_PYTHON_BIN" ]]; then
+  PYTHON_BIN="$DEFAULT_PYTHON_BIN"
+else
+  PYTHON_BIN="${PYTHON_BIN:-python3}"
+fi
 RUN_PROFILE="${RUN_PROFILE:-thesis_9x9_full_256}"
 BENCHMARK="${BENCHMARK:-gw9_goal_balanced_ab_v1}"
 BENCHMARKS_CSV="${BENCHMARKS_CSV:-}"
@@ -452,6 +457,125 @@ case "$RUN_PROFILE" in
     SCRATCH_REF_MIN_VALID_FRACTION="${SCRATCH_REF_MIN_VALID_FRACTION:-0.7}"
     ARTIFACT_LEVEL="${ARTIFACT_LEVEL:-lean}"
     ;;
+  thesis_9x9_ph_smoke)
+    # Short detector sanity run. It keeps the final 9x9 benchmark shape but uses a
+    # small seed/episode budget and full artifacts to verify the PH code path.
+    MODE="continual"
+    AUTO_BUILD_SCRATCH_REFS="${AUTO_BUILD_SCRATCH_REFS:-0}"
+    REUSE_SCRATCH_REFS_BY_TASK_SET="${REUSE_SCRATCH_REFS_BY_TASK_SET:-1}"
+    METHOD_SET="${METHOD_SET:-thesis_ph_only}"
+    BENCHMARKS_CSV="${BENCHMARKS_CSV:-gw9_goal_balanced_ab_v1,gw9_goal_balanced_aba_v1}"
+    SESSION_GROUP="${SESSION_GROUP:-thesis_9x9_ph_smoke}"
+    SEEDS_CSV="${SEEDS_CSV:-42}"
+    EPISODES_PER_TASK="${EPISODES_PER_TASK:-120}"
+    MAX_STEPS_PER_EPISODE="${MAX_STEPS_PER_EPISODE:-250}"
+    SCRATCH_EPISODES_PER_TASK="${SCRATCH_EPISODES_PER_TASK:-160}"
+    SCRATCH_MAX_STEPS_PER_EPISODE="${SCRATCH_MAX_STEPS_PER_EPISODE:-250}"
+    EVAL_EPISODES="${EVAL_EPISODES:-8}"
+    EVAL_EVERY_EPISODES="${EVAL_EVERY_EPISODES:-20}"
+    WARMUP_STEPS="${WARMUP_STEPS:-750}"
+    SCRATCH_WARMUP_STEPS="${SCRATCH_WARMUP_STEPS:-750}"
+    BATCH_SIZE="${BATCH_SIZE:-64}"
+    EPS_DECAY_STEPS="${EPS_DECAY_STEPS:-15000}"
+    SCRATCH_EPS_DECAY_STEPS="${SCRATCH_EPS_DECAY_STEPS:-15000}"
+    EPS_RESET_VALUE="${EPS_RESET_VALUE:-0.9}"
+    EPS_DECAY_STEPS_AFTER_SWITCH="${EPS_DECAY_STEPS_AFTER_SWITCH:-30000}"
+    POST_SWITCH_STEPS="${POST_SWITCH_STEPS:-7500}"
+    ARCHIVE_FRAC="${ARCHIVE_FRAC:-0.10}"
+    HIDDEN_SIZES_CSV="${HIDDEN_SIZES_CSV:-256,256}"
+    BUFFER_CAPACITY="${BUFFER_CAPACITY:-20000}"
+    RECENT_BUFFER_CAPACITY="${RECENT_BUFFER_CAPACITY:-12000}"
+    ARCHIVE_BUFFER_CAPACITY="${ARCHIVE_BUFFER_CAPACITY:-8000}"
+    SCRATCH_BUFFER_CAPACITY="${SCRATCH_BUFFER_CAPACITY:-20000}"
+    DETECTOR_SIGNAL="${DETECTOR_SIGNAL:-return}"
+    DETECTOR_EMA_ALPHA="${DETECTOR_EMA_ALPHA:-1.0}"
+    PH_DELTA="${PH_DELTA:-0.02}"
+    PH_THRESHOLD="${PH_THRESHOLD:-5.0}"
+    PH_MIN_INSTANCES="${PH_MIN_INSTANCES:-80}"
+    DETECTOR_MAX_DELAY_EPISODES="${DETECTOR_MAX_DELAY_EPISODES:-25}"
+    SCRATCH_REF_MIN_VALID_FRACTION="${SCRATCH_REF_MIN_VALID_FRACTION:-0.5}"
+    ARTIFACT_LEVEL="${ARTIFACT_LEVEL:-full}"
+    ;;
+  thesis_9x9_ph_calibration)
+    # Detector calibration run: PH-only, all thesis benchmarks, a few seeds, and
+    # full artifacts so detector_events.csv, detection_metrics.csv, and
+    # episode_metrics.csv can be inspected before launching the 45-seed run.
+    MODE="continual"
+    AUTO_BUILD_SCRATCH_REFS="${AUTO_BUILD_SCRATCH_REFS:-0}"
+    REUSE_SCRATCH_REFS_BY_TASK_SET="${REUSE_SCRATCH_REFS_BY_TASK_SET:-1}"
+    METHOD_SET="${METHOD_SET:-thesis_ph_only}"
+    BENCHMARKS_CSV="${BENCHMARKS_CSV:-gw9_goal_balanced_ab_v1,gw9_goal_balanced_ac_v1,gw9_goal_balanced_aba_v1,gw9_goal_balanced_abc_v1}"
+    SESSION_GROUP="${SESSION_GROUP:-thesis_9x9_ph_calibration}"
+    SEEDS_CSV="${SEEDS_CSV:-42,43,44}"
+    EPISODES_PER_TASK="${EPISODES_PER_TASK:-300}"
+    MAX_STEPS_PER_EPISODE="${MAX_STEPS_PER_EPISODE:-250}"
+    SCRATCH_EPISODES_PER_TASK="${SCRATCH_EPISODES_PER_TASK:-500}"
+    SCRATCH_MAX_STEPS_PER_EPISODE="${SCRATCH_MAX_STEPS_PER_EPISODE:-250}"
+    EVAL_EPISODES="${EVAL_EPISODES:-12}"
+    EVAL_EVERY_EPISODES="${EVAL_EVERY_EPISODES:-25}"
+    WARMUP_STEPS="${WARMUP_STEPS:-750}"
+    SCRATCH_WARMUP_STEPS="${SCRATCH_WARMUP_STEPS:-750}"
+    BATCH_SIZE="${BATCH_SIZE:-64}"
+    EPS_DECAY_STEPS="${EPS_DECAY_STEPS:-15000}"
+    SCRATCH_EPS_DECAY_STEPS="${SCRATCH_EPS_DECAY_STEPS:-15000}"
+    EPS_RESET_VALUE="${EPS_RESET_VALUE:-0.9}"
+    EPS_DECAY_STEPS_AFTER_SWITCH="${EPS_DECAY_STEPS_AFTER_SWITCH:-30000}"
+    POST_SWITCH_STEPS="${POST_SWITCH_STEPS:-7500}"
+    ARCHIVE_FRAC="${ARCHIVE_FRAC:-0.10}"
+    HIDDEN_SIZES_CSV="${HIDDEN_SIZES_CSV:-256,256}"
+    BUFFER_CAPACITY="${BUFFER_CAPACITY:-20000}"
+    RECENT_BUFFER_CAPACITY="${RECENT_BUFFER_CAPACITY:-12000}"
+    ARCHIVE_BUFFER_CAPACITY="${ARCHIVE_BUFFER_CAPACITY:-8000}"
+    SCRATCH_BUFFER_CAPACITY="${SCRATCH_BUFFER_CAPACITY:-20000}"
+    DETECTOR_SIGNAL="${DETECTOR_SIGNAL:-return}"
+    DETECTOR_EMA_ALPHA="${DETECTOR_EMA_ALPHA:-1.0}"
+    PH_DELTA="${PH_DELTA:-0.02}"
+    PH_THRESHOLD="${PH_THRESHOLD:-5.0}"
+    PH_MIN_INSTANCES="${PH_MIN_INSTANCES:-80}"
+    DETECTOR_MAX_DELAY_EPISODES="${DETECTOR_MAX_DELAY_EPISODES:-25}"
+    SCRATCH_REF_MIN_VALID_FRACTION="${SCRATCH_REF_MIN_VALID_FRACTION:-0.7}"
+    ARTIFACT_LEVEL="${ARTIFACT_LEVEL:-full}"
+    ;;
+  thesis_9x9_ph_final)
+    # Final PH-only extension of thesis_9x9_full_256. Use this to generate the
+    # two no-oracle PH methods over the same 4 benchmarks and 45 seeds, then
+    # combine with the existing 5-method full_256 session for 7-method stats.
+    MODE="continual"
+    AUTO_BUILD_SCRATCH_REFS="${AUTO_BUILD_SCRATCH_REFS:-1}"
+    REUSE_SCRATCH_REFS_BY_TASK_SET="${REUSE_SCRATCH_REFS_BY_TASK_SET:-1}"
+    METHOD_SET="${METHOD_SET:-thesis_ph_only}"
+    BENCHMARKS_CSV="${BENCHMARKS_CSV:-gw9_goal_balanced_ab_v1,gw9_goal_balanced_ac_v1,gw9_goal_balanced_aba_v1,gw9_goal_balanced_abc_v1}"
+    SESSION_GROUP="${SESSION_GROUP:-thesis_9x9_ph_final}"
+    SEEDS_CSV="${SEEDS_CSV:-42,43,44,45,46,47,48,49,50,51,52,53,54,55,56,57,58,59,60,61,62,63,64,65,66,67,68,69,70,71,72,73,74,75,76,77,78,79,80,81,82,83,84,85,86}"
+    EPISODES_PER_TASK="${EPISODES_PER_TASK:-400}"
+    MAX_STEPS_PER_EPISODE="${MAX_STEPS_PER_EPISODE:-250}"
+    SCRATCH_EPISODES_PER_TASK="${SCRATCH_EPISODES_PER_TASK:-500}"
+    SCRATCH_MAX_STEPS_PER_EPISODE="${SCRATCH_MAX_STEPS_PER_EPISODE:-250}"
+    EVAL_EPISODES="${EVAL_EPISODES:-15}"
+    EVAL_EVERY_EPISODES="${EVAL_EVERY_EPISODES:-25}"
+    WARMUP_STEPS="${WARMUP_STEPS:-750}"
+    SCRATCH_WARMUP_STEPS="${SCRATCH_WARMUP_STEPS:-750}"
+    BATCH_SIZE="${BATCH_SIZE:-64}"
+    EPS_DECAY_STEPS="${EPS_DECAY_STEPS:-15000}"
+    SCRATCH_EPS_DECAY_STEPS="${SCRATCH_EPS_DECAY_STEPS:-15000}"
+    EPS_RESET_VALUE="${EPS_RESET_VALUE:-0.9}"
+    EPS_DECAY_STEPS_AFTER_SWITCH="${EPS_DECAY_STEPS_AFTER_SWITCH:-30000}"
+    POST_SWITCH_STEPS="${POST_SWITCH_STEPS:-7500}"
+    ARCHIVE_FRAC="${ARCHIVE_FRAC:-0.10}"
+    HIDDEN_SIZES_CSV="${HIDDEN_SIZES_CSV:-256,256}"
+    BUFFER_CAPACITY="${BUFFER_CAPACITY:-20000}"
+    RECENT_BUFFER_CAPACITY="${RECENT_BUFFER_CAPACITY:-12000}"
+    ARCHIVE_BUFFER_CAPACITY="${ARCHIVE_BUFFER_CAPACITY:-8000}"
+    SCRATCH_BUFFER_CAPACITY="${SCRATCH_BUFFER_CAPACITY:-20000}"
+    DETECTOR_SIGNAL="${DETECTOR_SIGNAL:-return}"
+    DETECTOR_EMA_ALPHA="${DETECTOR_EMA_ALPHA:-1.0}"
+    PH_DELTA="${PH_DELTA:-0.02}"
+    PH_THRESHOLD="${PH_THRESHOLD:-5.0}"
+    PH_MIN_INSTANCES="${PH_MIN_INSTANCES:-80}"
+    DETECTOR_MAX_DELAY_EPISODES="${DETECTOR_MAX_DELAY_EPISODES:-25}"
+    SCRATCH_REF_MIN_VALID_FRACTION="${SCRATCH_REF_MIN_VALID_FRACTION:-0.7}"
+    ARTIFACT_LEVEL="${ARTIFACT_LEVEL:-lean}"
+    ;;
   thesis_archive_sweep)
     # Archive fraction sweep: oracle_segmented with af=0.10,0.15,0.20,0.25,0.30
     # Tests whether larger archive improves retention to distill-level without distillation.
@@ -647,6 +771,11 @@ EPS_RESET_VALUE="${EPS_RESET_VALUE:-0.9}"
 EPS_DECAY_STEPS_AFTER_SWITCH="${EPS_DECAY_STEPS_AFTER_SWITCH:-30000}"
 ALPHA_MAX_MULT="${ALPHA_MAX_MULT:-3.0}"
 TD_K="${TD_K:-1.0}"
+DETECTOR_SIGNAL="${DETECTOR_SIGNAL:-return}"
+DETECTOR_EMA_ALPHA="${DETECTOR_EMA_ALPHA:-0.05}"
+PH_DELTA="${PH_DELTA:-0.02}"
+PH_THRESHOLD="${PH_THRESHOLD:-5.0}"
+PH_MIN_INSTANCES="${PH_MIN_INSTANCES:-80}"
 DISTILL_LAMBDA="${DISTILL_LAMBDA:-0.0}"
 DISTILL_NEW_TASK_ONLY="${DISTILL_NEW_TASK_ONLY:-1}"
 DER_ALPHA="${DER_ALPHA:-0.01}"
@@ -709,6 +838,15 @@ if [[ -z "$METHODS_CSV" ]]; then
       thesis_full_256)
         METHODS_CSV="ddqn_vanilla,oracle_reset,oracle_segmented,oracle_segmented_distill_l001,der_plus_plus"
         ;;
+      thesis_ph_only)
+        METHODS_CSV="ph_reset,ph_segmented"
+        ;;
+      thesis_full_256_ph)
+        METHODS_CSV="ddqn_vanilla,oracle_reset,oracle_segmented,oracle_segmented_distill_l001,der_plus_plus,ph_reset,ph_segmented"
+        ;;
+      thesis_ph_ablation)
+        METHODS_CSV="ddqn_vanilla,oracle_reset,ph_reset,oracle_segmented,ph_segmented"
+        ;;
       thesis_archive_sweep)
         METHODS_CSV="oracle_segmented,oracle_segmented_af015,oracle_segmented_af020,oracle_segmented_af025,oracle_segmented_af030"
         ;;
@@ -763,6 +901,7 @@ log "Success threshold: $SUCCESS_THRESHOLD | Consecutive evals for threshold: $T
 log "Scratch refs: min_final_success=$SCRATCH_REF_MIN_FINAL_SUCCESS min_valid_runs=$SCRATCH_REF_MIN_VALID_RUNS min_valid_fraction=$SCRATCH_REF_MIN_VALID_FRACTION"
 log "Scratch gate: enabled=$SCRATCH_GATE_ENABLED require_stable=$SCRATCH_GATE_REQUIRE_STABLE min_passing_fraction=$SCRATCH_GATE_MIN_PASSING_FRACTION min_final_success=$SCRATCH_GATE_MIN_FINAL_SUCCESS"
 log "Switch epsilon reset: value=$EPS_RESET_VALUE decay_steps=$EPS_DECAY_STEPS_AFTER_SWITCH"
+log "Detector: signal=$DETECTOR_SIGNAL ema_alpha=$DETECTOR_EMA_ALPHA ph_delta=$PH_DELTA ph_threshold=$PH_THRESHOLD min_instances=$PH_MIN_INSTANCES max_delay=$DETECTOR_MAX_DELAY_EPISODES"
 log "Replay: archive_frac=$ARCHIVE_FRAC recent_mix=$RECENT_MIX_START->$RECENT_MIX_END post_switch_steps=$POST_SWITCH_STEPS keep_tail=$SEGMENTED_KEEP_TAIL"
 log "Distill: lambda=$DISTILL_LAMBDA new_task_only=$DISTILL_NEW_TASK_ONLY"
 log "DER++: alpha=$DER_ALPHA beta=$DER_BETA der_capacity=${DER_CAPACITY:-0}"
@@ -799,6 +938,11 @@ build_common_args() {
     --eps-decay-steps-after-switch "$EPS_DECAY_STEPS_AFTER_SWITCH" \
     --alpha-max-mult "$ALPHA_MAX_MULT" \
     --td-k "$TD_K" \
+    --detector-signal "$DETECTOR_SIGNAL" \
+    --detector-ema-alpha "$DETECTOR_EMA_ALPHA" \
+    --ph-delta "$PH_DELTA" \
+    --ph-threshold "$PH_THRESHOLD" \
+    --ph-min-instances "$PH_MIN_INSTANCES" \
     --learning-rate "$LEARNING_RATE" \
     --tau "$TAU" \
     --gamma "$GAMMA" \
@@ -846,6 +990,11 @@ build_scratch_args() {
     --eps-decay-steps-after-switch "$EPS_DECAY_STEPS_AFTER_SWITCH" \
     --alpha-max-mult "$ALPHA_MAX_MULT" \
     --td-k "$TD_K" \
+    --detector-signal "$DETECTOR_SIGNAL" \
+    --detector-ema-alpha "$DETECTOR_EMA_ALPHA" \
+    --ph-delta "$PH_DELTA" \
+    --ph-threshold "$PH_THRESHOLD" \
+    --ph-min-instances "$PH_MIN_INSTANCES" \
     --learning-rate "$LEARNING_RATE" \
     --tau "$TAU" \
     --gamma "$GAMMA" \
@@ -1094,6 +1243,12 @@ cat >"$SESSION_ROOT/session_config.json" <<JSON
   "eps_decay_steps_after_switch": $EPS_DECAY_STEPS_AFTER_SWITCH,
   "alpha_max_mult": $ALPHA_MAX_MULT,
   "td_k": $TD_K,
+  "detector_signal": "$DETECTOR_SIGNAL",
+  "detector_ema_alpha": $DETECTOR_EMA_ALPHA,
+  "ph_delta": $PH_DELTA,
+  "ph_threshold": $PH_THRESHOLD,
+  "ph_min_instances": $PH_MIN_INSTANCES,
+  "detector_max_delay_episodes": $DETECTOR_MAX_DELAY_EPISODES,
   "learning_rate": $LEARNING_RATE,
   "der_alpha": $DER_ALPHA,
   "der_beta": $DER_BETA,

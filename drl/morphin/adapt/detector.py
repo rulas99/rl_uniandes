@@ -2,13 +2,17 @@ from __future__ import annotations
 
 
 class PageHinkleyDetector:
-    """Simple Page-Hinkley detector for upward drift on a scalar signal."""
+    """Page-Hinkley detector for upward drift on a scalar monitoring signal.
+
+    Reward drops are handled by the caller by passing a negated reward/return signal,
+    matching the tabular MORPHIN notebook while keeping this detector one-sided.
+    """
 
     def __init__(
         self,
-        delta: float = 0.005,
+        delta: float = 0.02,
         threshold: float = 5.0,
-        min_instances: int = 20,
+        min_instances: int = 80,
     ) -> None:
         self.delta = float(delta)
         self.threshold = float(threshold)
